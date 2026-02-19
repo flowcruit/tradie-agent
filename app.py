@@ -9,10 +9,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-twilio_client = Client(
-    os.getenv("AC38de26539db94be86344ef15d8ca83ee"),
-    os.getenv("d0558ee484d3ddca2d75db0432abe8e0")
-)
+twilio_client = Client("ACxxxxxxxx", os.getenv("TWILIO_AUTH_TOKEN"))
 
 @app.route("/sms", methods=["POST"])
 def sms_reply():
