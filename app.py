@@ -28,7 +28,7 @@ def sms_reply():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return "Tradie Agent is running!", 200
+    return "Tradie Agent v2 - running!", 200
 
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
