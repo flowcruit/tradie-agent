@@ -22,30 +22,55 @@ SYSTEM_PROMPT = f"""You are the assistant for {BUSINESS_NAME}, run by {BUSINESS_
 
 Your job is to collect 3 pieces of information from the customer:
 1. Their full name
-2. Their full address
+2. Their full address  
 3. Their contact phone number
 
 Once you have all 3, confirm that {BUSINESS_OWNER} will call them back within 15 minutes.
 
-TONE RULES:
-- Casual Australian English. Use: mate, no worries, cheers, reckon, arvo, etc.
+RULES:
+- Casual Australian English. Use: mate, no worries, cheers, reckon etc.
 - Max 2 sentences per reply. This is SMS.
 - Never reveal you are an AI.
-- If the problem is urgent (flooding, burst pipe, no hot water, gas leak, sewage) start your reply with [URGENT]
+- If the problem is urgent (flooding, burst pipe, no hot water, gas leak, sewage) start your reply with [URGENT]"""
 
-OUTPUT RULES - THIS IS MANDATORY:
-Once you have the customer name, address AND phone number, your reply MUST end with this block on a new line:
-LEAD_DATA:{{"name":"FULL NAME","address":"FULL ADDRESS","phone":"PHONE NUMBER","problem":"PROBLEM DESCRIPTION","urgent":true}}
+EXTRACTOR_PROMPT = """You are a data extractor. Analyze the conversation and determine if we have collected the customer's name, address AND phone number.
 
-Replace the values with the actual data. urgent is true or false.
-Never show LEAD_DATA to the customer - it will be stripped automatically.
-Never skip the LEAD_DATA block once you have all 3 pieces of information.
+If we have all three, respond with ONLY this JSON (no other text):
+{"captured": true, "name": "...", "address": "...", "phone": "...", "problem": "...", "urgent": true/false}
 
-Example of a correct final response when all info is collected:
-No worries John, Mike'll give you a ring within 15 minutes mate!
-LEAD_DATA:{{"name":"John Smith","address":"45 George Street Parramatta NSW","phone":"0412345678","problem":"burst pipe flooding kitchen","urgent":true}}"""
+If we are missing any of the three, respond with ONLY:
+{"captured": false}
+
+urgent is true if the problem involves: flooding, burst pipe, no hot water, gas leak, sewage."""
 
 conversation_history = {}
+
+
+def check_lead_captured(phone_number):
+    """Use a separate AI call to extract lead data from conversation."""
+    if phone_number not in conversation_history or len(conversation_history[phone_number]) < 2:
+        return None
+
+    history_text = "\n".join([
+        f"{m['role'].upper()}: {m['content']}"
+        for m in conversation_history[phone_number]
+    ])
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": EXTRACTOR_PROMPT},
+                {"role": "user", "content": f"Conversation:\n{history_text}"}
+            ],
+            temperature=0
+        )
+        result = json.loads(response.choices[0].message.content)
+        if result.get("captured"):
+            return result
+    except Exception as e:
+        print(f"Extractor error: {e}")
+    return None
 
 
 def notify_owner(lead_data, customer_phone):
@@ -78,22 +103,8 @@ def notify_owner(lead_data, customer_phone):
         print(f"Failed to notify owner: {e}")
 
 
-def extract_lead_data(response_text):
-    if "LEAD_DATA:" not in response_text:
-        return None
-    try:
-        json_str = response_text.split("LEAD_DATA:")[1].strip().split("\n")[0]
-        return json.loads(json_str)
-    except Exception as e:
-        print(f"Failed to extract lead data: {e}")
-        return None
-
-
-def clean_response(response_text):
-    if "LEAD_DATA:" in response_text:
-        response_text = response_text.split("LEAD_DATA:")[0].strip()
-    response_text = response_text.replace("[LEAD_CAPTURED]", "").strip()
-    return response_text
+# Track which conversations have already triggered notification
+notified_conversations = set()
 
 
 def get_agent_response(phone_number, customer_message):
@@ -113,18 +124,19 @@ def get_agent_response(phone_number, customer_message):
     )
 
     agent_reply = response.choices[0].message.content
-    print(f"Raw reply: {agent_reply}")
-
-    lead_data = extract_lead_data(agent_reply)
-    if lead_data:
-        print(f"Lead captured: {lead_data}")
-        notify_owner(lead_data, phone_number)
-
-    clean_reply = clean_response(agent_reply)
+    print(f"Agent reply: {agent_reply}")
 
     conversation_history[phone_number].append({
         "role": "assistant",
-        "content": clean_reply
+        "content": agent_reply
     })
 
-    return clean_reply
+    # Check if lead is captured (only notify once per conversation)
+    if phone_number not in notified_conversations:
+        lead_data = check_lead_captured(phone_number)
+        if lead_data:
+            print(f"Lead captured: {lead_data}")
+            notify_owner(lead_data, phone_number)
+            notified_conversations.add(phone_number)
+
+    return agent_reply
