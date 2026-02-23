@@ -198,6 +198,17 @@ def mark_done(lead_id):
     update_lead_status(lead_id, "done")
     return jsonify({"status": "ok"})
 
+@app.route("/test-sms", methods=["GET"])
+def test_sms():
+    try:
+        result = twilio_client.messages.create(
+            body="Test from Render",
+            from_=TWILIO_PHONE,
+            to=OWNER_PHONE
+        )
+        return f"SMS sent! SID: {result.sid}", 200
+    except Exception as e:
+        return f"Error: {str(e)}", 500
 
 if __name__ == "__main__":
     init_db()
