@@ -1,6 +1,7 @@
 from openai import OpenAI
 from twilio.rest import Client as TwilioClient
 from dotenv import load_dotenv
+from database import save_message, get_conversation, save_lead
 import os
 import json
 
@@ -22,7 +23,7 @@ SYSTEM_PROMPT = f"""You are the assistant for {BUSINESS_NAME}, run by {BUSINESS_
 
 Your job is to collect 3 pieces of information from the customer:
 1. Their full name
-2. Their full address  
+2. Their full address
 3. Their contact phone number
 
 Once you have all 3, confirm that {BUSINESS_OWNER} will call them back within 15 minutes.
@@ -35,27 +36,42 @@ RULES:
 
 EXTRACTOR_PROMPT = """You are a data extractor. Analyze the conversation and determine if we have collected the customer's name, address AND phone number.
 
-If we have all three, respond with ONLY this JSON (no other text):
-{"captured": true, "name": "...", "address": "...", "phone": "...", "problem": "...", "urgent": true/false}
+If we have all three, respond with ONLY this JSON:
+{"captured": true, "name": "...", "address": "...", "phone": "...", "problem": "...", "urgent": true}
 
-If we are missing any of the three, respond with ONLY:
+If missing any, respond with ONLY:
 {"captured": false}
 
-urgent is true if the problem involves: flooding, burst pipe, no hot water, gas leak, sewage."""
+urgent is true if: flooding, burst pipe, no hot water, gas leak, sewage."""
 
-conversation_history = {}
+notified_conversations = set()
 
 
-def check_lead_captured(phone_number):
-    """Use a separate AI call to extract lead data from conversation."""
-    if phone_number not in conversation_history or len(conversation_history[phone_number]) < 2:
+def notify_owner(lead_data, customer_phone):
+    if not OWNER_PHONE or not TWILIO_PHONE:
+        print("ERROR: OWNER_PHONE or TWILIO_PHONE not set")
+        return
+    urgent_tag = "URGENT" if lead_data.get("urgent") else "New Lead"
+    message = (
+        f"{urgent_tag} - {BUSINESS_NAME}\n"
+        f"Problem: {lead_data.get('problem', 'Unknown')}\n"
+        f"Name: {lead_data.get('name', 'Unknown')}\n"
+        f"Address: {lead_data.get('address', 'Unknown')}\n"
+        f"Phone: {lead_data.get('phone', customer_phone)}\n"
+        f"Reply to: {customer_phone}"
+    )
+    try:
+        result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=OWNER_PHONE)
+        print(f"Notification sent. SID: {result.sid}")
+    except Exception as e:
+        print(f"Failed to notify owner: {e}")
+
+
+def check_lead_captured(phone):
+    history = get_conversation(phone)
+    if len(history) < 2:
         return None
-
-    history_text = "\n".join([
-        f"{m['role'].upper()}: {m['content']}"
-        for m in conversation_history[phone_number]
-    ])
-
+    history_text = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in history])
     try:
         response = openai_client.chat.completions.create(
             model="gpt-4o",
@@ -73,70 +89,30 @@ def check_lead_captured(phone_number):
     return None
 
 
-def notify_owner(lead_data, customer_phone):
-    if not OWNER_PHONE:
-        print("ERROR: OWNER_PHONE not set")
-        return
-    if not TWILIO_PHONE:
-        print("ERROR: TWILIO_PHONE_NUMBER not set")
-        return
-
-    urgent_tag = "URGENT" if lead_data.get("urgent") else "New Lead"
-    message = (
-        f"{urgent_tag} - {BUSINESS_NAME}\n"
-        f"Problem: {lead_data.get('problem', 'Unknown')}\n"
-        f"Name: {lead_data.get('name', 'Unknown')}\n"
-        f"Address: {lead_data.get('address', 'Unknown')}\n"
-        f"Phone: {lead_data.get('phone', customer_phone)}\n"
-        f"Reply to: {customer_phone}"
-    )
-
-    try:
-        print(f"Sending notification to {OWNER_PHONE} from {TWILIO_PHONE}")
-        result = twilio_client.messages.create(
-            body=message,
-            from_=TWILIO_PHONE,
-            to=OWNER_PHONE
-        )
-        print(f"Notification sent. SID: {result.sid}")
-    except Exception as e:
-        print(f"Failed to notify owner: {e}")
-
-
-# Track which conversations have already triggered notification
-notified_conversations = set()
-
-
 def get_agent_response(phone_number, customer_message):
-    if phone_number not in conversation_history:
-        conversation_history[phone_number] = []
-
-    conversation_history[phone_number].append({
-        "role": "user",
-        "content": customer_message
-    })
+    # Save incoming message
+    save_message(phone_number, "user", customer_message)
+    
+    # Get full conversation history from DB
+    history = get_conversation(phone_number)
 
     response = openai_client.chat.completions.create(
         model="gpt-4o",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT}
-        ] + conversation_history[phone_number]
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history
     )
 
     agent_reply = response.choices[0].message.content
-    print(f"Agent reply: {agent_reply}")
+    
+    # Save agent reply
+    save_message(phone_number, "assistant", agent_reply)
 
-    conversation_history[phone_number].append({
-        "role": "assistant",
-        "content": agent_reply
-    })
-
-    # Check if lead is captured (only notify once per conversation)
+    # Check if lead captured (only notify once)
     if phone_number not in notified_conversations:
         lead_data = check_lead_captured(phone_number)
         if lead_data:
-            print(f"Lead captured: {lead_data}")
+            save_lead(phone_number, lead_data)
             notify_owner(lead_data, phone_number)
             notified_conversations.add(phone_number)
+            print(f"Lead saved and owner notified: {lead_data.get('name')}")
 
     return agent_reply
