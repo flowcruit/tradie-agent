@@ -23,7 +23,7 @@ SYSTEM_PROMPT = f"""You are the assistant for {BUSINESS_NAME}, run by {BUSINESS_
 
 Your job:
 1. Collect customer full name, address and contact phone number
-2. Once collected, ask 1 follow-up question about the job (e.g. how long, severity)
+2. Once collected, ask 1 follow-up question about the job
 3. Tell them Mike will call back within 15 minutes to confirm price after inspection
 
 RULES:
@@ -51,7 +51,7 @@ notified_conversations = set()
 def notify_owner(lead_data, customer_phone):
     if not OWNER_PHONE or not TWILIO_PHONE:
         print("ERROR: Missing OWNER_PHONE or TWILIO_PHONE")
-        return
+        return False
     urgent_tag = "URGENT" if lead_data.get("urgent") else "New Lead"
     message = (
         f"{urgent_tag} - {BUSINESS_NAME}\n"
@@ -60,28 +60,29 @@ def notify_owner(lead_data, customer_phone):
         f"Address: {lead_data.get('address', 'Unknown')}\n"
         f"Phone: {lead_data.get('phone', customer_phone)}\n"
         f"Customer SMS: {customer_phone}\n\n"
-        f"Reply: QUOTE {customer_phone} to request details\n"
-        f"Reply: APPROVE {customer_phone} 150 300 to send quote"
+        f"APPROVE {customer_phone} 150 300 — send quote\n"
+        f"DONE {customer_phone} — mark complete"
     )
     try:
         result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=OWNER_PHONE)
-        print(f"Lead notification sent. SID: {result.sid}")
+        print(f"Owner notified. SID: {result.sid}")
+        return True
     except Exception as e:
         print(f"Failed to notify owner: {e}")
+        return False
 
 
 def send_quote_to_customer(customer_phone, name, low, high):
     if not TWILIO_PHONE:
         return False
     message = (
-        f"Hi {name}, this is {BUSINESS_NAME}.\n"
-        f"Based on what you've described, the estimated cost is ${low}-${high} AUD.\n"
-        f"This is subject to physical inspection. Mike will confirm the exact price on arrival.\n"
-        f"He'll call you within 15 minutes to confirm. No worries!"
+        f"Hi {name}, {BUSINESS_NAME} here.\n"
+        f"Estimated cost: ${low}-${high} AUD (subject to inspection).\n"
+        f"Mike will confirm exact price on arrival. He'll call within 15 mins!"
     )
     try:
         result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=customer_phone)
-        print(f"Quote sent to customer. SID: {result.sid}")
+        print(f"Quote sent. SID: {result.sid}")
         return True
     except Exception as e:
         print(f"Failed to send quote: {e}")
@@ -102,7 +103,13 @@ def extract_lead_data(phone):
             ],
             temperature=0
         )
-        return json.loads(response.choices[0].message.content)
+        raw = response.choices[0].message.content.strip()
+        # Strip markdown if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        return json.loads(raw.strip())
     except Exception as e:
         print(f"Extractor error: {e}")
     return None
@@ -120,12 +127,15 @@ def get_agent_response(phone_number, customer_message):
     agent_reply = response.choices[0].message.content
     save_message(phone_number, "assistant", agent_reply)
 
+    # Try to notify owner after every message if not already done
     if phone_number not in notified_conversations:
         data = extract_lead_data(phone_number)
+        print(f"Extractor result for {phone_number}: {data}")
         if data and data.get("lead_captured"):
             save_lead(phone_number, data)
-            notify_owner(data, phone_number)
-            notified_conversations.add(phone_number)
-            print(f"Lead captured and owner notified: {data.get('name')}")
+            success = notify_owner(data, phone_number)
+            if success:
+                notified_conversations.add(phone_number)
+                print(f"Lead captured: {data.get('name')}")
 
     return agent_reply
