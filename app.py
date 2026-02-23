@@ -210,6 +210,15 @@ def test_sms():
     except Exception as e:
         return f"Error: {str(e)}", 500
 
+@app.route("/debug/<phone>", methods=["GET"])
+def debug_lead(phone):
+    from database import get_conversation
+    from agent import extract_lead_data
+    history = get_conversation(phone)
+    data = extract_lead_data(phone)
+    return jsonify({"messages": len(history), "extractor": data})
+
+
 if __name__ == "__main__":
     init_db()
     app.run(debug=False, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
