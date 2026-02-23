@@ -1,7 +1,7 @@
 from openai import OpenAI
 from twilio.rest import Client as TwilioClient
 from dotenv import load_dotenv
-from database import save_message, get_conversation, save_lead, save_quote, get_lead_by_phone
+from database import save_message, get_conversation, save_lead, get_lead_by_phone
 import os
 import json
 
@@ -21,47 +21,36 @@ print(f"Twilio phone: {TWILIO_PHONE}")
 
 SYSTEM_PROMPT = f"""You are the assistant for {BUSINESS_NAME}, run by {BUSINESS_OWNER}, an emergency plumber in Australia.
 
-PHASE 1 - LEAD CAPTURE: Collect these 3 pieces of information:
-1. Customer full name
-2. Full address
-3. Contact phone number
-
-PHASE 2 - QUOTE: Once you have all 3, ask 1-2 quick questions to understand the job better so you can give a rough estimate. For example: "How long has the pipe been leaking?" or "Is the water currently shut off?"
-
-PHASE 3 - CONFIRM: Tell them Mike will call back within 15 minutes to confirm the exact price after seeing the job.
+Your job:
+1. Collect customer full name, address and contact phone number
+2. Once collected, ask 1 follow-up question about the job (e.g. how long, severity)
+3. Tell them Mike will call back within 15 minutes to confirm price after inspection
 
 RULES:
-- Casual Australian English. Use: mate, no worries, cheers, reckon, arvo etc.
-- Max 2 sentences per reply. This is SMS.
+- Casual Australian English: mate, no worries, cheers, reckon, arvo
+- Max 2 sentences. This is SMS.
 - Never reveal you are an AI.
-- If urgent (flooding, burst pipe, no hot water, gas leak, sewage) start reply with [URGENT]
-- Never give a specific price, only say Mike will confirm after inspection"""
+- If urgent (flooding, burst pipe, no hot water, gas leak, sewage) start with [URGENT]
+- Never give specific prices. Mike confirms after seeing the job."""
 
-EXTRACTOR_PROMPT = """Analyze this conversation and extract data.
-
-Respond with ONLY this JSON, no other text:
+EXTRACTOR_PROMPT = """Extract data from this conversation. Respond ONLY with JSON, no other text:
 {
   "lead_captured": true/false,
   "name": "full name or null",
-  "address": "full address or null", 
+  "address": "full address or null",
   "phone": "phone number or null",
   "problem": "problem description or null",
-  "urgent": true/false,
-  "ready_for_quote": true/false,
-  "job_details": "any additional details about the job or null"
+  "urgent": true/false
 }
-
-lead_captured is true only when we have name, address AND phone.
-ready_for_quote is true when we have lead_captured AND at least one follow-up question about the job has been answered.
+lead_captured is true only when we have name AND address AND phone.
 urgent is true if: flooding, burst pipe, no hot water, gas leak, sewage."""
 
 notified_conversations = set()
-quoted_conversations = set()
 
 
 def notify_owner(lead_data, customer_phone):
     if not OWNER_PHONE or not TWILIO_PHONE:
-        print("ERROR: OWNER_PHONE or TWILIO_PHONE not set")
+        print("ERROR: Missing OWNER_PHONE or TWILIO_PHONE")
         return
     urgent_tag = "URGENT" if lead_data.get("urgent") else "New Lead"
     message = (
@@ -70,7 +59,9 @@ def notify_owner(lead_data, customer_phone):
         f"Name: {lead_data.get('name', 'Unknown')}\n"
         f"Address: {lead_data.get('address', 'Unknown')}\n"
         f"Phone: {lead_data.get('phone', customer_phone)}\n"
-        f"Reply to: {customer_phone}"
+        f"Customer SMS: {customer_phone}\n\n"
+        f"Reply: QUOTE {customer_phone} to request details\n"
+        f"Reply: APPROVE {customer_phone} 150 300 to send quote"
     )
     try:
         result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=OWNER_PHONE)
@@ -79,25 +70,25 @@ def notify_owner(lead_data, customer_phone):
         print(f"Failed to notify owner: {e}")
 
 
-def send_quote_to_owner(quote_data, customer_phone, lead_id):
-    if not OWNER_PHONE or not TWILIO_PHONE:
-        return
+def send_quote_to_customer(customer_phone, name, low, high):
+    if not TWILIO_PHONE:
+        return False
     message = (
-        f"QUOTE REQUEST - {BUSINESS_NAME}\n"
-        f"Customer: {quote_data.get('name')}\n"
-        f"Job: {quote_data.get('problem')}\n"
-        f"Details: {quote_data.get('job_details', 'None')}\n"
-        f"Address: {quote_data.get('address')}\n"
-        f"Reply APPROVE to send quote, or DECLINE"
+        f"Hi {name}, this is {BUSINESS_NAME}.\n"
+        f"Based on what you've described, the estimated cost is ${low}-${high} AUD.\n"
+        f"This is subject to physical inspection. Mike will confirm the exact price on arrival.\n"
+        f"He'll call you within 15 minutes to confirm. No worries!"
     )
     try:
-        result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=OWNER_PHONE)
-        print(f"Quote request sent. SID: {result.sid}")
+        result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=customer_phone)
+        print(f"Quote sent to customer. SID: {result.sid}")
+        return True
     except Exception as e:
-        print(f"Failed to send quote request: {e}")
+        print(f"Failed to send quote: {e}")
+        return False
 
 
-def extract_conversation_data(phone):
+def extract_lead_data(phone):
     history = get_conversation(phone)
     if len(history) < 2:
         return None
@@ -129,28 +120,12 @@ def get_agent_response(phone_number, customer_message):
     agent_reply = response.choices[0].message.content
     save_message(phone_number, "assistant", agent_reply)
 
-    data = extract_conversation_data(phone_number)
-    if not data:
-        return agent_reply
-
-    # Phase 1: Lead captured - notify owner once
-    if data.get("lead_captured") and phone_number not in notified_conversations:
-        lead_id = save_lead(phone_number, data)
-        notify_owner(data, phone_number)
-        notified_conversations.add(phone_number)
-        print(f"Lead saved: {data.get('name')}")
-
-    # Phase 2: Ready for quote - send quote request to owner once
-    if data.get("ready_for_quote") and phone_number not in quoted_conversations:
-        lead = get_lead_by_phone(phone_number)
-        lead_id = lead["id"] if lead else None
-        quote_id = save_quote(
-            phone_number, lead_id,
-            data.get("problem"), 0, 0,
-            data.get("job_details", "")
-        )
-        send_quote_to_owner(data, phone_number, lead_id)
-        quoted_conversations.add(phone_number)
-        print(f"Quote request sent for: {data.get('name')}")
+    if phone_number not in notified_conversations:
+        data = extract_lead_data(phone_number)
+        if data and data.get("lead_captured"):
+            save_lead(phone_number, data)
+            notify_owner(data, phone_number)
+            notified_conversations.add(phone_number)
+            print(f"Lead captured and owner notified: {data.get('name')}")
 
     return agent_reply
