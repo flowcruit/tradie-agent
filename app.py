@@ -8,20 +8,17 @@ import os
 load_dotenv()
 
 app = Flask(__name__)
+twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
 
-twilio_client = Client("ACxxxxxxxx", os.getenv("TWILIO_AUTH_TOKEN"))
+print("APP V2 LOADED")
 
 @app.route("/sms", methods=["POST"])
 def sms_reply():
     incoming_msg = request.form.get("Body", "")
     from_number = request.form.get("From", "")
-    
-    print(f"Message from {from_number}: {incoming_msg}")
-    
+    print(f"Incoming from {from_number}: {incoming_msg}")
     reply = get_agent_response(from_number, incoming_msg)
-    
-    print(f"Agent reply: {reply}")
-    
+    print(f"Reply sent: {reply[:100]}")
     resp = MessagingResponse()
     resp.message(reply)
     return str(resp)
