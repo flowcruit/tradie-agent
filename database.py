@@ -1,6 +1,5 @@
 import sqlite3
 import os
-import json
 from datetime import datetime
 
 DB_PATH = os.environ.get("DB_PATH", "tradie_agent.db")
@@ -38,6 +37,21 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS quotes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER,
+            phone TEXT NOT NULL,
+            problem TEXT,
+            estimate_low INTEGER,
+            estimate_high INTEGER,
+            details TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (lead_id) REFERENCES leads(id)
+        )
+    """)
     
     conn.commit()
     conn.close()
@@ -69,15 +83,16 @@ def save_lead(phone, lead_data):
     
     if existing:
         conn.execute("""
-            UPDATE leads SET name=?, address=?, contact_phone=?, problem=?, urgent=?, 
+            UPDATE leads SET name=?, address=?, contact_phone=?, problem=?, urgent=?,
             status='new', updated_at=CURRENT_TIMESTAMP WHERE phone=?
         """, (
             lead_data.get("name"), lead_data.get("address"),
             lead_data.get("phone"), lead_data.get("problem"),
             1 if lead_data.get("urgent") else 0, phone
         ))
+        lead_id = existing["id"]
     else:
-        conn.execute("""
+        cur = conn.execute("""
             INSERT INTO leads (phone, name, address, contact_phone, problem, urgent)
             VALUES (?, ?, ?, ?, ?, ?)
         """, (
@@ -85,7 +100,37 @@ def save_lead(phone, lead_data):
             lead_data.get("phone"), lead_data.get("problem"),
             1 if lead_data.get("urgent") else 0
         ))
+        lead_id = cur.lastrowid
     
+    conn.commit()
+    conn.close()
+    return lead_id
+
+def save_quote(phone, lead_id, problem, low, high, details):
+    conn = get_db()
+    cur = conn.execute("""
+        INSERT INTO quotes (lead_id, phone, problem, estimate_low, estimate_high, details)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (lead_id, phone, problem, low, high, details))
+    quote_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return quote_id
+
+def get_pending_quotes():
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT q.*, l.name, l.address FROM quotes q
+        LEFT JOIN leads l ON q.lead_id = l.id
+        WHERE q.status = 'pending'
+        ORDER BY q.created_at DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def update_quote_status(quote_id, status):
+    conn = get_db()
+    conn.execute("UPDATE quotes SET status=? WHERE id=?", (status, quote_id))
     conn.commit()
     conn.close()
 
@@ -97,6 +142,12 @@ def get_all_leads():
     conn.close()
     return [dict(r) for r in rows]
 
+def get_lead_by_phone(phone):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM leads WHERE phone = ?", (phone,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 def update_lead_status(lead_id, status):
     conn = get_db()
     conn.execute(
@@ -106,5 +157,4 @@ def update_lead_status(lead_id, status):
     conn.commit()
     conn.close()
 
-# Initialize on import
 init_db()
