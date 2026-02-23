@@ -3,7 +3,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from dotenv import load_dotenv
 from database import get_all_leads, update_lead_status, init_db
-from agent_v2 import get_agent_response
+from agent import get_agent_response
 import os
 
 load_dotenv()
