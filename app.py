@@ -1,6 +1,6 @@
 import sys
 import os
-sys.stdout = sys.stderr  # Force logs to appear in Render
+sys.stdout = sys.stderr
 
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
@@ -67,7 +67,7 @@ def handle_owner_command(from_number, body):
         lead = get_lead_by_phone(customer_phone)
         if not lead:
             return f"No lead found for {customer_phone}"
-        msg = f"Hi {lead['name']}, {BUSINESS_NAME} here. To prepare your quote, how long has the issue been happening and have you tried anything to fix it?"
+        msg = f"Hi {lead['name']}, {BUSINESS_NAME} here. How long has the issue been happening and have you tried anything to fix it?"
         try:
             twilio_client.messages.create(body=msg, from_=TWILIO_PHONE, to=customer_phone)
             return f"Quote questions sent to {lead['name']}"
@@ -101,6 +101,20 @@ def sms_reply():
 @app.route("/health", methods=["GET"])
 def health():
     return "Tradie Agent v5 - running!", 200
+
+
+@app.route("/migrate", methods=["GET"])
+def migrate():
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
+        c = conn.cursor()
+        c.execute("ALTER TABLE leads ADD CONSTRAINT leads_phone_unique UNIQUE (phone)")
+        conn.commit()
+        conn.close()
+        return "Migration done", 200
+    except Exception as e:
+        return f"Done (may already exist): {str(e)}", 200
 
 
 @app.route("/leads", methods=["GET"])
