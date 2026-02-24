@@ -1,10 +1,13 @@
+import sys
+import os
+sys.stdout = sys.stderr  # Force logs to appear in Render
+
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client
 from dotenv import load_dotenv
-from database import get_all_leads, update_lead_status, init_db, get_lead_by_phone, get_conversation
-from agent import get_agent_response, send_quote_to_customer, openai_client
-import os
+from database import get_all_leads, update_lead_status, init_db, get_lead_by_phone
+from agent import get_agent_response, send_quote_to_customer
 
 load_dotenv()
 
@@ -15,69 +18,19 @@ OWNER_PHONE = os.getenv("OWNER_PHONE", "")
 TWILIO_PHONE = os.getenv("TWILIO_PHONE_NUMBER", "")
 BUSINESS_NAME = os.getenv("BUSINESS_NAME", "Mike's Emergency Plumbing")
 
-print("APP V4 LOADED - with owner commands")
+print("APP V5 LOADED")
+print(f"OWNER_PHONE: {OWNER_PHONE}")
+print(f"TWILIO_PHONE: {TWILIO_PHONE}")
 
 def is_owner(phone):
-    """Check if the sender is the business owner."""
-    return phone.replace("+", "").replace(" ", "") in OWNER_PHONE.replace("+", "").replace(" ", "")
+    clean_incoming = phone.replace("+", "").replace(" ", "")
+    clean_owner = OWNER_PHONE.replace("+", "").replace(" ", "")
+    return clean_incoming == clean_owner
 
-def handle_owner_command(command, body):
-    """Process commands from Mike."""
+def handle_owner_command(from_number, body):
     cmd = body.strip().upper()
-    
-    # QUOTE <phone> — generate quote for a customer
-    if cmd.startswith("QUOTE"):
-        parts = body.strip().split(" ", 1)
-        if len(parts) < 2:
-            return "Usage: QUOTE +34655174298"
-        customer_phone = parts[1].strip()
-        lead = get_lead_by_phone(customer_phone)
-        if not lead:
-            return f"No lead found for {customer_phone}"
-        # Send quote request to customer asking for job details
-        message = (
-            f"Hi {lead['name']}, this is {BUSINESS_NAME}. "
-            f"To prepare your quote, can you tell me: "
-            f"1) How long has the issue been happening? "
-            f"2) Have you tried anything to fix it?"
-        )
-        try:
-            twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=customer_phone)
-            return f"Quote questions sent to {lead['name']} at {customer_phone}"
-        except Exception as e:
-            return f"Error: {e}"
-    
-    # APPROVE <phone> <low> <high> — send quote to customer
-    if cmd.startswith("APPROVE"):
-        parts = body.strip().split(" ")
-        if len(parts) < 4:
-            return "Usage: APPROVE +34655174298 150 300"
-        customer_phone = parts[1]
-        try:
-            low = int(parts[2])
-            high = int(parts[3])
-        except:
-            return "Price must be numbers. Usage: APPROVE +34655174298 150 300"
-        lead = get_lead_by_phone(customer_phone)
-        name = lead['name'] if lead else "mate"
-        result = send_quote_to_customer(customer_phone, name, low, high)
-        if result:
-            return f"Quote sent to {name}: ${low}-${high} AUD"
-        return "Failed to send quote"
-    
-    # DONE <phone> — mark lead as completed
-    if cmd.startswith("DONE"):
-        parts = body.strip().split(" ", 1)
-        if len(parts) < 2:
-            return "Usage: DONE +34655174298"
-        customer_phone = parts[1].strip()
-        lead = get_lead_by_phone(customer_phone)
-        if lead:
-            update_lead_status(lead['id'], 'done')
-            return f"Lead marked as done for {lead['name']}"
-        return f"No lead found for {customer_phone}"
+    parts = body.strip().split(" ")
 
-    # LEADS — show summary
     if cmd == "LEADS":
         leads = get_all_leads()
         new_leads = [l for l in leads if l['status'] == 'new']
@@ -89,6 +42,38 @@ def handle_owner_command(command, body):
             summary += f"{urgent}{l['name']} - {l['contact_phone'] or l['phone']}\n"
         return summary.strip()
 
+    if cmd.startswith("APPROVE") and len(parts) >= 4:
+        customer_phone = parts[1]
+        try:
+            low = int(parts[2])
+            high = int(parts[3])
+        except:
+            return "Usage: APPROVE +61xxxxxxxxx 150 300"
+        lead = get_lead_by_phone(customer_phone)
+        name = lead['name'] if lead else "mate"
+        result = send_quote_to_customer(customer_phone, name, low, high)
+        return f"Quote sent to {name}: ${low}-${high} AUD" if result else "Failed to send quote"
+
+    if cmd.startswith("DONE") and len(parts) >= 2:
+        customer_phone = parts[1]
+        lead = get_lead_by_phone(customer_phone)
+        if lead:
+            update_lead_status(lead['id'], 'done')
+            return f"Done: {lead['name']}"
+        return f"No lead found for {customer_phone}"
+
+    if cmd.startswith("QUOTE") and len(parts) >= 2:
+        customer_phone = parts[1]
+        lead = get_lead_by_phone(customer_phone)
+        if not lead:
+            return f"No lead found for {customer_phone}"
+        msg = f"Hi {lead['name']}, {BUSINESS_NAME} here. To prepare your quote, how long has the issue been happening and have you tried anything to fix it?"
+        try:
+            twilio_client.messages.create(body=msg, from_=TWILIO_PHONE, to=customer_phone)
+            return f"Quote questions sent to {lead['name']}"
+        except Exception as e:
+            return f"Error: {e}"
+
     return None
 
 
@@ -96,27 +81,26 @@ def handle_owner_command(command, body):
 def sms_reply():
     incoming_msg = request.form.get("Body", "")
     from_number = request.form.get("From", "")
-    print(f"Incoming from {from_number}: {incoming_msg}")
+    print(f"SMS from {from_number}: {incoming_msg}")
 
     resp = MessagingResponse()
 
-    # Check if it's Mike sending a command
     if is_owner(from_number):
+        print(f"Owner command: {incoming_msg}")
         result = handle_owner_command(from_number, incoming_msg)
         if result:
             resp.message(result)
             return str(resp)
 
-    # Otherwise it's a customer
     reply = get_agent_response(from_number, incoming_msg)
-    print(f"Reply: {reply[:100]}")
+    print(f"Reply: {reply[:80]}")
     resp.message(reply)
     return str(resp)
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return "Tradie Agent v4 - running!", 200
+    return "Tradie Agent v5 - running!", 200
 
 
 @app.route("/leads", methods=["GET"])
@@ -129,7 +113,7 @@ def leads_dashboard():
     html = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>Tradie Agent - Leads</title>
+    <title>Tradie Agent Dashboard</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -149,7 +133,7 @@ def leads_dashboard():
         .stat-number {{ font-size: 32px; font-weight: bold; color: #333; }}
         .stat-label {{ color: #888; font-size: 13px; }}
         .commands {{ background: #fff3cd; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-size: 13px; }}
-        .commands code {{ background: #eee; padding: 2px 6px; border-radius: 3px; }}
+        code {{ background: #eee; padding: 2px 6px; border-radius: 3px; }}
     </style>
 </head>
 <body>
@@ -160,27 +144,26 @@ def leads_dashboard():
         <div class="stat"><div class="stat-number">{new}</div><div class="stat-label">New</div></div>
     </div>
     <div class="commands">
-        <strong>SMS Commands (send from your mobile):</strong><br>
-        <code>LEADS</code> — see new leads &nbsp;|&nbsp;
-        <code>QUOTE +61xxxxxxxxx</code> — request job details &nbsp;|&nbsp;
-        <code>APPROVE +61xxxxxxxxx 150 300</code> — send quote $150-$300 &nbsp;|&nbsp;
-        <code>DONE +61xxxxxxxxx</code> — mark complete
+        <strong>SMS Commands from your mobile:</strong><br>
+        <code>LEADS</code> — view new leads &nbsp;|&nbsp;
+        <code>QUOTE +61xxx</code> — ask job details &nbsp;|&nbsp;
+        <code>APPROVE +61xxx 150 300</code> — send quote &nbsp;|&nbsp;
+        <code>DONE +61xxx</code> — mark complete
     </div>
 """
 
     if not leads:
-        html += "<p>No leads yet. Waiting for the first customer...</p>"
+        html += "<p>No leads yet.</p>"
 
     for lead in leads:
         urgent_class = "urgent" if lead['urgent'] else ("done" if lead['status'] == 'done' else "new")
         badge_class = "badge-urgent" if lead['urgent'] else ("badge-done" if lead['status'] == 'done' else "badge-new")
         badge_text = "URGENT" if lead['urgent'] else lead['status'].upper()
-
         html += f"""
     <div class="lead {urgent_class}">
         <strong>{lead['name'] or 'Unknown'}</strong>
         <span class="badge {badge_class}">{badge_text}</span>
-        <div style="margin-top:5px">{lead['problem'] or 'No problem description'}</div>
+        <div style="margin-top:5px">{lead['problem'] or ''}</div>
         <div class="meta">
             📍 {lead['address'] or 'No address'} &nbsp;|&nbsp;
             📞 {lead['contact_phone'] or lead['phone']} &nbsp;|&nbsp;
@@ -198,11 +181,12 @@ def mark_done(lead_id):
     update_lead_status(lead_id, "done")
     return jsonify({"status": "ok"})
 
+
 @app.route("/test-sms", methods=["GET"])
 def test_sms():
     try:
         result = twilio_client.messages.create(
-            body="Test from Render",
+            body="Test from Render v5",
             from_=TWILIO_PHONE,
             to=OWNER_PHONE
         )
@@ -210,19 +194,11 @@ def test_sms():
     except Exception as e:
         return f"Error: {str(e)}", 500
 
-@app.route("/debug/<phone>", methods=["GET"])
-def debug_lead(phone):
-    from database import get_conversation
-    from agent import extract_lead_data
-    history = get_conversation(phone)
-    data = extract_lead_data(phone)
-    return jsonify({"messages": len(history), "extractor": data})
 
 @app.route("/test-db", methods=["GET"])
 def test_db():
     try:
         import psycopg2
-        import os
         url = os.environ.get("DATABASE_URL", "NOT SET")
         conn = psycopg2.connect(url)
         c = conn.cursor()
@@ -231,9 +207,19 @@ def test_db():
         c.execute("SELECT COUNT(*) FROM messages")
         count = c.fetchone()[0]
         conn.close()
-        return jsonify({"success": True, "count": count, "url_prefix": url[:30]})
+        return jsonify({"success": True, "count": count})
     except Exception as e:
-        return jsonify({"error": str(e), "url": os.environ.get("DATABASE_URL", "NOT SET")[:30]}), 500
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/debug/<path:phone>", methods=["GET"])
+def debug_lead(phone):
+    from database import get_conversation
+    from agent import extract_lead_data
+    history = get_conversation(phone)
+    data = extract_lead_data(phone)
+    return jsonify({"messages": len(history), "extractor": data})
+
 
 if __name__ == "__main__":
     init_db()
