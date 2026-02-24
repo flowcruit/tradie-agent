@@ -218,6 +218,22 @@ def debug_lead(phone):
     data = extract_lead_data(phone)
     return jsonify({"messages": len(history), "extractor": data})
 
+@app.route("/test-db", methods=["GET"])
+def test_db():
+    try:
+        import psycopg2
+        import os
+        url = os.environ.get("DATABASE_URL", "NOT SET")
+        conn = psycopg2.connect(url)
+        c = conn.cursor()
+        c.execute("INSERT INTO messages (phone, role, content) VALUES (%s, %s, %s)", ("+34000", "user", "test"))
+        conn.commit()
+        c.execute("SELECT COUNT(*) FROM messages")
+        count = c.fetchone()[0]
+        conn.close()
+        return jsonify({"success": True, "count": count, "url_prefix": url[:30]})
+    except Exception as e:
+        return jsonify({"error": str(e), "url": os.environ.get("DATABASE_URL", "NOT SET")[:30]}), 500
 
 if __name__ == "__main__":
     init_db()
