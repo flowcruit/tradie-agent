@@ -1,3 +1,6 @@
+import sys
+sys.stdout = sys.stderr
+
 from openai import OpenAI
 from twilio.rest import Client as TwilioClient
 from dotenv import load_dotenv
@@ -46,6 +49,14 @@ lead_captured is true only when we have name AND address AND phone.
 urgent is true if: flooding, burst pipe, no hot water, gas leak, sewage."""
 
 notified_conversations = set()
+
+
+def normalize_phone(phone):
+    """Ensure phone number starts with +"""
+    phone = phone.strip()
+    if not phone.startswith("+"):
+        phone = "+" + phone
+    return phone
 
 
 def notify_owner(lead_data, customer_phone):
@@ -104,7 +115,6 @@ def extract_lead_data(phone):
             temperature=0
         )
         raw = response.choices[0].message.content.strip()
-        # Strip markdown if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -116,8 +126,12 @@ def extract_lead_data(phone):
 
 
 def get_agent_response(phone_number, customer_message):
+    phone_number = normalize_phone(phone_number)
+    print(f"Processing message from {phone_number}")
+
     save_message(phone_number, "user", customer_message)
     history = get_conversation(phone_number)
+    print(f"Conversation history: {len(history)} messages")
 
     response = openai_client.chat.completions.create(
         model="gpt-4o",
@@ -127,15 +141,14 @@ def get_agent_response(phone_number, customer_message):
     agent_reply = response.choices[0].message.content
     save_message(phone_number, "assistant", agent_reply)
 
-    # Try to notify owner after every message if not already done
     if phone_number not in notified_conversations:
         data = extract_lead_data(phone_number)
-        print(f"Extractor result for {phone_number}: {data}")
+        print(f"Extractor result: {data}")
         if data and data.get("lead_captured"):
             save_lead(phone_number, data)
             success = notify_owner(data, phone_number)
             if success:
                 notified_conversations.add(phone_number)
-                print(f"Lead captured: {data.get('name')}")
+                print(f"Lead captured and owner notified: {data.get('name')}")
 
     return agent_reply
