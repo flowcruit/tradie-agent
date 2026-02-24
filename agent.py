@@ -52,7 +52,6 @@ notified_conversations = set()
 
 
 def normalize_phone(phone):
-    """Ensure phone number starts with +"""
     phone = phone.strip()
     if not phone.startswith("+"):
         phone = "+" + phone
@@ -63,16 +62,12 @@ def notify_owner(lead_data, customer_phone):
     if not OWNER_PHONE or not TWILIO_PHONE:
         print("ERROR: Missing OWNER_PHONE or TWILIO_PHONE")
         return False
-    urgent_tag = "URGENT" if lead_data.get("urgent") else "New Lead"
+    urgent = "URGENT" if lead_data.get("urgent") else "Lead"
     message = (
-        f"{urgent_tag} - {BUSINESS_NAME}\n"
-        f"Problem: {lead_data.get('problem', 'Unknown')}\n"
-        f"Name: {lead_data.get('name', 'Unknown')}\n"
-        f"Address: {lead_data.get('address', 'Unknown')}\n"
-        f"Phone: {lead_data.get('phone', customer_phone)}\n"
-        f"Customer SMS: {customer_phone}\n\n"
-        f"APPROVE {customer_phone} 150 300 — send quote\n"
-        f"DONE {customer_phone} — mark complete"
+        f"{urgent}: {lead_data.get('name')}\n"
+        f"{lead_data.get('problem', '')}\n"
+        f"{lead_data.get('address', '')}\n"
+        f"Tel: {lead_data.get('phone', customer_phone)}"
     )
     try:
         result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=OWNER_PHONE)
@@ -88,8 +83,8 @@ def send_quote_to_customer(customer_phone, name, low, high):
         return False
     message = (
         f"Hi {name}, {BUSINESS_NAME} here.\n"
-        f"Estimated cost: ${low}-${high} AUD (subject to inspection).\n"
-        f"Mike will confirm exact price on arrival. He'll call within 15 mins!"
+        f"Estimate: ${low}-${high} AUD (subject to inspection).\n"
+        f"Mike confirms exact price on arrival. Calling within 15 mins!"
     )
     try:
         result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=customer_phone)
