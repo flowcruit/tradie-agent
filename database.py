@@ -1,27 +1,10 @@
 import os
 import psycopg2
-import psycopg2.extras
-from psycopg2 import pool
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Connection pool
-_pool = None
-
-def get_pool():
-    global _pool
-    if _pool is None:
-        if DATABASE_URL:
-            _pool = psycopg2.pool.SimpleConnectionPool(1, 5, DATABASE_URL)
-        else:
-            raise Exception("DATABASE_URL not set")
-    return _pool
-
 def get_db():
-    return get_pool().getconn()
-
-def release_db(conn):
-    get_pool().putconn(conn)
+    return psycopg2.connect(DATABASE_URL)
 
 def init_db():
     conn = get_db()
@@ -69,7 +52,7 @@ def init_db():
         conn.rollback()
         print(f"DB init error: {e}")
     finally:
-        release_db(conn)
+        conn.close()
 
 def save_message(phone, role, content):
     conn = get_db()
@@ -84,7 +67,7 @@ def save_message(phone, role, content):
         conn.rollback()
         print(f"save_message error: {e}")
     finally:
-        release_db(conn)
+        conn.close()
 
 def get_conversation(phone):
     conn = get_db()
@@ -100,7 +83,7 @@ def get_conversation(phone):
         print(f"get_conversation error: {e}")
         return []
     finally:
-        release_db(conn)
+        conn.close()
 
 def save_lead(phone, lead_data):
     conn = get_db()
@@ -127,7 +110,7 @@ def save_lead(phone, lead_data):
         print(f"save_lead error: {e}")
         return None
     finally:
-        release_db(conn)
+        conn.close()
 
 def get_all_leads():
     conn = get_db()
@@ -142,7 +125,7 @@ def get_all_leads():
         print(f"get_all_leads error: {e}")
         return []
     finally:
-        release_db(conn)
+        conn.close()
 
 def get_lead_by_phone(phone):
     conn = get_db()
@@ -158,7 +141,7 @@ def get_lead_by_phone(phone):
         print(f"get_lead_by_phone error: {e}")
         return None
     finally:
-        release_db(conn)
+        conn.close()
 
 def update_lead_status(lead_id, status):
     conn = get_db()
@@ -170,7 +153,7 @@ def update_lead_status(lead_id, status):
         conn.rollback()
         print(f"update_lead_status error: {e}")
     finally:
-        release_db(conn)
+        conn.close()
 
 def save_quote(phone, lead_id, problem, low, high, details):
     conn = get_db()
@@ -188,6 +171,6 @@ def save_quote(phone, lead_id, problem, low, high, details):
         print(f"save_quote error: {e}")
         return None
     finally:
-        release_db(conn)
+        conn.close()
 
 init_db()
