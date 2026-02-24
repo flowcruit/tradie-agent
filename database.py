@@ -1,3 +1,6 @@
+import sys
+sys.stdout = sys.stderr
+
 import os
 import psycopg2
 
@@ -27,7 +30,7 @@ def init_db():
                 address TEXT,
                 contact_phone TEXT,
                 problem TEXT,
-                urgent INTEGER DEFAULT 0,
+                urgent BOOLEAN DEFAULT FALSE,
                 status TEXT DEFAULT 'new',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -100,7 +103,7 @@ def save_lead(phone, lead_data):
         """, (
             phone, lead_data.get("name"), lead_data.get("address"),
             lead_data.get("phone"), lead_data.get("problem"),
-            1 if lead_data.get("urgent") else 0
+            bool(lead_data.get("urgent"))
         ))
         lead_id = c.fetchone()[0]
         conn.commit()
