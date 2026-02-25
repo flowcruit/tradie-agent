@@ -22,19 +22,21 @@ print(f"Agent initialized: {BUSINESS_NAME}")
 print(f"Owner phone: {OWNER_PHONE}")
 print(f"Twilio phone: {TWILIO_PHONE}")
 
-SYSTEM_PROMPT = f"""You are the assistant for {BUSINESS_NAME}, run by {BUSINESS_OWNER}, an emergency plumber in Australia.
+SYSTEM_PROMPT = f"""You are the assistant for {BUSINESS_NAME}, run by {BUSINESS_OWNER}, an emergency plumber serving Canadian homeowners.
 
 Your job:
-1. Collect customer full name, address and contact phone number
-2. Once collected, ask 1 follow-up question about the job
-3. Tell them Mike will call back within 15 minutes to confirm price after inspection
+1. Collect customer full name, full address (including city and province), and contact phone number
+2. Once collected, ask 1 brief follow-up question about the job to help {BUSINESS_OWNER} prepare
+3. Let them know {BUSINESS_OWNER} will call back within 15 minutes to confirm pricing after assessment
 
 RULES:
-- Casual Australian English: mate, no worries, cheers, reckon, arvo
-- Max 2 sentences. This is SMS.
+- Friendly, professional Canadian English. You can say: thanks, sorry to hear that, absolutely, for sure, no problem
+- Keep responses to 2-3 sentences max. This is SMS.
 - Never reveal you are an AI.
-- If urgent (flooding, burst pipe, no hot water, gas leak, sewage) start with [URGENT]
-- Never give specific prices. Mike confirms after seeing the job."""
+- If urgent (flooding, burst pipe, no hot water, gas leak, sewage, frozen pipes, water heater failure) start reply with [URGENT]
+- Never give specific prices. {BUSINESS_OWNER} confirms pricing after seeing the job.
+- Use CAD when referencing currency if needed.
+- Always confirm the city and province if the customer only gives a street address."""
 
 EXTRACTOR_PROMPT = """Extract data from this conversation. Respond ONLY with JSON, no other text:
 {
@@ -46,7 +48,7 @@ EXTRACTOR_PROMPT = """Extract data from this conversation. Respond ONLY with JSO
   "urgent": true/false
 }
 lead_captured is true only when we have name AND address AND phone.
-urgent is true if: flooding, burst pipe, no hot water, gas leak, sewage."""
+urgent is true if: flooding, burst pipe, no hot water, gas leak, sewage, frozen pipes, water heater failure."""
 
 notified_conversations = set()
 
@@ -62,12 +64,15 @@ def notify_owner(lead_data, customer_phone):
     if not OWNER_PHONE or not TWILIO_PHONE:
         print("ERROR: Missing OWNER_PHONE or TWILIO_PHONE")
         return False
-    urgent = "URGENT" if lead_data.get("urgent") else "Lead"
+    urgent = "URGENT" if lead_data.get("urgent") else "New Lead"
     message = (
         f"{urgent}: {lead_data.get('name')}\n"
-        f"{lead_data.get('problem', '')}\n"
-        f"{lead_data.get('address', '')}\n"
-        f"Tel: {lead_data.get('phone', customer_phone)}"
+        f"Problem: {lead_data.get('problem', '')}\n"
+        f"Address: {lead_data.get('address', '')}\n"
+        f"Tel: {lead_data.get('phone', customer_phone)}\n"
+        f"SMS: {customer_phone}\n\n"
+        f"Reply: APPROVE {customer_phone} 150 300 — send quote\n"
+        f"DONE {customer_phone} — mark complete"
     )
     try:
         result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=OWNER_PHONE)
@@ -83,8 +88,8 @@ def send_quote_to_customer(customer_phone, name, low, high):
         return False
     message = (
         f"Hi {name}, {BUSINESS_NAME} here.\n"
-        f"Estimate: ${low}-${high} AUD (subject to inspection).\n"
-        f"Mike confirms exact price on arrival. Calling within 15 mins!"
+        f"Based on your description, we estimate ${low}-${high} CAD for the job (subject to on-site assessment).\n"
+        f"{BUSINESS_OWNER} will confirm the exact price when he arrives. He'll call you shortly to confirm the time!"
     )
     try:
         result = twilio_client.messages.create(body=message, from_=TWILIO_PHONE, to=customer_phone)
