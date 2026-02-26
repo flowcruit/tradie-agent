@@ -98,19 +98,13 @@ def handle_conversation_relay(ws, caller_phone):
                 save_message(caller_phone, "user", caller_text)
                 conversation_history.append({"role": "user", "content": caller_text})
 
-                # Get agent response from OpenAI
-                agent_response = get_voice_response(conversation_history)
+                # Stream response tokens directly to ConversationRelay
+                # TTS starts speaking before OpenAI finishes generating
+                agent_response = get_voice_response_streaming(conversation_history, ws)
                 print(f"Agent: {agent_response}")
 
                 save_message(caller_phone, "assistant", agent_response)
                 conversation_history.append({"role": "assistant", "content": agent_response})
-
-                # Send text back — ConversationRelay will TTS it
-                ws.send(json.dumps({
-                    "type": "text",
-                    "token": agent_response,
-                    "last": True
-                }))
 
                 # End the call if agent said goodbye
                 if should_end_call(agent_response):
@@ -141,14 +135,76 @@ def handle_conversation_relay(ws, caller_phone):
             _process_call_end(caller_phone)
 
 
+def get_voice_response_streaming(conversation_history, ws):
+    """
+    Stream tokens from OpenAI directly to ConversationRelay.
+    Each token is sent immediately as it arrives — TTS starts before response is complete.
+    Returns the full response text for saving to DB.
+    """
+    full_response = []
+    buffer = ""
+
+    try:
+        stream = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "system", "content": VOICE_SYSTEM_PROMPT}] + conversation_history,
+            temperature=0.7,
+            max_tokens=150,
+            stream=True
+        )
+
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta is None:
+                continue
+
+            buffer += delta
+            full_response.append(delta)
+
+            # Send on sentence boundaries for natural TTS pacing
+            # This lets ConversationRelay start speaking mid-response
+            if any(buffer.endswith(p) for p in [".", "!", "?", ",", " —"]):
+                if buffer.strip():
+                    ws.send(json.dumps({
+                        "type": "text",
+                        "token": buffer,
+                        "last": False
+                    }))
+                    buffer = ""
+
+        # Send any remaining buffer as the final token
+        final_text = buffer.strip()
+        if final_text:
+            ws.send(json.dumps({
+                "type": "text",
+                "token": final_text,
+                "last": True
+            }))
+        else:
+            # Send empty final token to signal end
+            ws.send(json.dumps({
+                "type": "text",
+                "token": "",
+                "last": True
+            }))
+
+        return "".join(full_response).strip()
+
+    except Exception as e:
+        print(f"OpenAI streaming error: {e}")
+        fallback = f"Sorry about that — let me get {BUSINESS_OWNER} to call you right back."
+        ws.send(json.dumps({"type": "text", "token": fallback, "last": True}))
+        return fallback
+
+
 def get_voice_response(conversation_history):
-    """Call OpenAI with voice system prompt and return short response"""
+    """Non-streaming fallback — used when ws not available"""
     try:
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "system", "content": VOICE_SYSTEM_PROMPT}] + conversation_history,
             temperature=0.7,
-            max_tokens=150  # Short for natural voice
+            max_tokens=150
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
