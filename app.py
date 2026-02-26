@@ -365,7 +365,12 @@ def test_voice():
             from_=TWILIO_PHONE,
             twiml=f"""<Response>
                 <Connect>
-                    <ConversationRelay url="{ws_url}" language="en-CA"
+                    <ConversationRelay url="{ws_url}"
+                        language="en-CA"
+                        ttsProvider="google"
+                        voice="en-CA-Neural2-C"
+                        transcriptionProvider="google"
+                        speechModel="telephony"
                         welcomeGreeting="Thank you for calling {BUSINESS_NAME}, you've reached our answering service. I can take your details and have someone call you right back. What's your name please?" />
                 </Connect>
             </Response>"""
