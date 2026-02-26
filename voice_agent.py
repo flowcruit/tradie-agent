@@ -184,4 +184,4 @@ def _process_call_end(caller_phone):
                 "channel": "voice"
             }
             notify_owner(partial, caller_phone)
-            print(f"Partial voice lead — Mike notified: {partial['name']}")artial['name']}")
+            print(f"Partial voice lead — Mike notified: {partial['name']}")
