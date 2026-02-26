@@ -145,11 +145,7 @@ def voice_entry():
     # ConversationRelay handles STT+TTS and gives us text via WebSocket
     connect.conversation_relay(
         url=ws_url,
-        language="en-CA",
-        tts_provider="google",       # or "amazon" — google has good en-CA
-        voice="en-CA-Neural2-C",     # female Canadian English voice
-        transcription_provider="google",
-        speech_model="telephony",
+        language="en-US",
         welcome_greeting=(
             f"Thank you for calling {BUSINESS_NAME}, you've reached our answering service. "
             f"I can take your details and have someone call you right back. "
@@ -366,11 +362,7 @@ def test_voice():
             twiml=f"""<Response>
                 <Connect>
                     <ConversationRelay url="{ws_url}"
-                        language="en-CA"
-                        ttsProvider="google"
-                        voice="en-CA-Neural2-C"
-                        transcriptionProvider="google"
-                        speechModel="telephony"
+                        language="en-US"
                         welcomeGreeting="Thank you for calling {BUSINESS_NAME}, you've reached our answering service. I can take your details and have someone call you right back. What's your name please?" />
                 </Connect>
             </Response>"""
