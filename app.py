@@ -353,15 +353,21 @@ def test_sms():
 
 @app.route("/test-voice", methods=["GET"])
 def test_voice():
-    """Quick test — make an outbound call to owner to verify voice works"""
+    """Outbound call to owner using ConversationRelay — real agent test"""
     try:
-        host = request.host
-        ws_url = f"wss://{host}/voice-ws"
+        if BASE_URL:
+            ws_url = BASE_URL.replace("https://", "wss://") + "/voice-ws"
+        else:
+            ws_url = f"wss://{request.host}/voice-ws"
+
         call = twilio_client.calls.create(
             to=OWNER_PHONE,
             from_=TWILIO_PHONE,
             twiml=f"""<Response>
-                <Say voice="Polly.Joanna">Hello, this is a test of the Tradie Agent voice system. It is working correctly.</Say>
+                <Connect>
+                    <ConversationRelay url="{ws_url}" language="en-CA"
+                        welcomeGreeting="Thank you for calling {BUSINESS_NAME}, you've reached our answering service. I can take your details and have someone call you right back. What's your name please?" />
+                </Connect>
             </Response>"""
         )
         return f"Test call initiated! SID: {call.sid}", 200
