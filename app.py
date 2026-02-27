@@ -12,7 +12,8 @@ from database import (
     get_all_leads, update_lead_status, init_db, get_lead_by_phone,
     get_client_by_twilio_number, create_client,
     create_outbound_lead, get_outbound_lead_by_phone,
-    update_outbound_lead, get_all_outbound_leads
+    update_outbound_lead, get_all_outbound_leads,
+    get_demo_session, delete_demo_session
 )
 from agent_sms import get_agent_response, send_quote_to_customer
 from outbound import handle_yes_response, send_batch, process_followups, start_scheduler, handle_demo_no_answer
@@ -214,6 +215,55 @@ try:
             traceback.print_exc()
 
     print("flask-sock registered at /voice-ws")
+
+    @sock.route("/demo-ws")
+    def demo_ws_sock(ws):
+        """
+        WebSocket for outbound demo calls.
+        Looks up business name from demo_sessions by prospect phone.
+        Completely separate from inbound /voice-ws — no shared state.
+        """
+        caller_phone = "unknown"
+        print("Demo WebSocket connected")
+
+        try:
+            raw = ws.receive(timeout=10)
+            if raw:
+                setup = json.loads(raw)
+                if setup.get("type") == "setup":
+                    caller_phone = setup.get("from", "unknown")
+                    print(f"Demo setup — prospect: {caller_phone}")
+
+            # Load business name from demo_sessions
+            session = get_demo_session(caller_phone)
+            if session:
+                client = {
+                    "id": None,
+                    "business_name": session["business_name"],
+                    "owner_name": session["owner_name"] or "our technician",
+                    "owner_phone": caller_phone,
+                    "twilio_number": TWILIO_PHONE,
+                    "province": "ON",
+                    "plan": "demo",
+                    "active": True
+                }
+                print(f"Demo client: {client['business_name']}")
+            else:
+                print(f"No demo session for {caller_phone} — using default")
+                client = get_default_client()
+
+            from voice_agent import handle_conversation_relay
+            handle_conversation_relay(ws, caller_phone, client)
+
+        except Exception as e:
+            print(f"demo_ws_sock error: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if caller_phone != "unknown":
+                delete_demo_session(caller_phone)
+
+
 
 except ImportError:
     print("flask-sock not installed")

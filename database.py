@@ -531,7 +531,72 @@ def get_leads_no_answer_demo():
     finally:
         conn.close()
 
+
+# ── Demo sessions ──────────────────────────────────────────────────────────
+
+def create_demo_session(prospect_phone, business_name, owner_name):
+    """Register a pending demo call so the agent knows which business to simulate."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS demo_sessions (
+                id SERIAL PRIMARY KEY,
+                prospect_phone TEXT UNIQUE NOT NULL,
+                business_name TEXT NOT NULL,
+                owner_name TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '30 minutes'
+            )
+        """)
+        c.execute("""
+            INSERT INTO demo_sessions (prospect_phone, business_name, owner_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (prospect_phone) DO UPDATE SET
+                business_name=EXCLUDED.business_name,
+                owner_name=EXCLUDED.owner_name,
+                created_at=NOW(),
+                expires_at=NOW() + INTERVAL '30 minutes'
+        """, (prospect_phone, business_name, owner_name))
+        conn.commit()
+        print(f"Demo session created: {prospect_phone} → {business_name}")
+    except Exception as e:
+        conn.rollback()
+        print(f"create_demo_session error: {e}")
+    finally:
+        conn.close()
+
+def get_demo_session(prospect_phone):
+    """Get demo session for a prospect phone number."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT business_name, owner_name FROM demo_sessions
+            WHERE prospect_phone = %s AND expires_at > NOW()
+        """, (prospect_phone,))
+        r = c.fetchone()
+        if not r:
+            return None
+        return {"business_name": r[0], "owner_name": r[1]}
+    except Exception as e:
+        print(f"get_demo_session error: {e}")
+        return None
+    finally:
+        conn.close()
+
+def delete_demo_session(prospect_phone):
+    """Clean up demo session after call ends."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM demo_sessions WHERE prospect_phone = %s", (prospect_phone,))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"delete_demo_session error: {e}")
+    finally:
+        conn.close()
+
+
 init_outbound_tables()
-
-
-init_db()

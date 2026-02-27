@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 from twilio.rest import Client as TwilioClient
 from database import (
     get_all_outbound_leads, get_leads_due_followup,
-    get_leads_no_answer_demo, update_outbound_lead, log_outbound_event
+    get_leads_no_answer_demo, update_outbound_lead, log_outbound_event,
+    create_demo_session, delete_demo_session
 )
 
 twilio = TwilioClient(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
@@ -181,9 +182,12 @@ def _make_demo_call(lead):
     except Exception as e:
         print(f"Clear history error: {e}")
 
-    ws_url = (BASE_URL.replace("https://", "wss://") + "/voice-ws") if BASE_URL else "wss://tradie-agent.onrender.com/voice-ws"
+    ws_url = (BASE_URL.replace("https://", "wss://") + "/demo-ws") if BASE_URL else "wss://tradie-agent.onrender.com/demo-ws"
     business_name = lead["business_name"]
     owner_name = lead["owner_name"] or "our technician"
+
+    # Register demo session — agent will look this up by prospect phone
+    create_demo_session(lead["phone"], business_name, owner_name)
 
     welcome = (
         f"Thank you for calling {business_name}. "
@@ -213,6 +217,7 @@ def _make_demo_call(lead):
 
         # Wait for call to complete then send after-demo SMS
         time.sleep(180)  # Wait 3 min
+        delete_demo_session(lead['phone'])
         _send_after_demo_sms(lead)
 
     except Exception as e:
