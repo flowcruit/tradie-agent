@@ -328,7 +328,7 @@ def save_quote(phone, lead_id, problem, low, high, details):
 
 # ── Outbound leads ──────────────────────────────────────────────────────────
 
-def create_outbound_lead(business_name, owner_name, phone, city):
+def init_outbound_tables():
     conn = get_db()
     try:
         c = conn.cursor()
@@ -339,23 +339,56 @@ def create_outbound_lead(business_name, owner_name, phone, city):
                 owner_name TEXT,
                 phone TEXT UNIQUE NOT NULL,
                 city TEXT,
+                status TEXT DEFAULT 'pending',
                 sms_sent BOOLEAN DEFAULT FALSE,
                 sms_sent_at TIMESTAMPTZ,
+                sms_opened BOOLEAN DEFAULT FALSE,
                 responded BOOLEAN DEFAULT FALSE,
                 responded_at TIMESTAMPTZ,
                 demo_called BOOLEAN DEFAULT FALSE,
+                demo_answered BOOLEAN DEFAULT FALSE,
                 demo_called_at TIMESTAMPTZ,
                 trial_activated BOOLEAN DEFAULT FALSE,
-                status TEXT DEFAULT 'pending',
+                trial_activated_at TIMESTAMPTZ,
+                paid BOOLEAN DEFAULT FALSE,
+                follow_up_count INTEGER DEFAULT 0,
+                last_follow_up_at TIMESTAMPTZ,
+                next_follow_up_at TIMESTAMPTZ,
+                notes TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS outbound_events (
+                id SERIAL PRIMARY KEY,
+                lead_phone TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                notes TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_outbound_phone ON outbound_leads(phone)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_outbound_status ON outbound_leads(status)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_outbound_next_followup ON outbound_leads(next_follow_up_at)")
+        conn.commit()
+        print("Outbound tables ready")
+    except Exception as e:
+        conn.rollback()
+        print(f"init_outbound_tables error: {e}")
+    finally:
+        conn.close()
+
+def create_outbound_lead(business_name, owner_name, phone, city):
+    conn = get_db()
+    try:
+        c = conn.cursor()
         c.execute("""
             INSERT INTO outbound_leads (business_name, owner_name, phone, city)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (phone) DO NOTHING
             RETURNING id
-        """, (business_name, owner_name, phone, city))
+        """, (business_name, owner_name or "", phone, city or "Ontario"))
         result = c.fetchone()
         conn.commit()
         return result[0] if result else None
@@ -371,7 +404,9 @@ def get_outbound_lead_by_phone(phone):
     try:
         c = conn.cursor()
         c.execute("""
-            SELECT id, business_name, owner_name, phone, city, status
+            SELECT id, business_name, owner_name, phone, city, status,
+                   sms_sent, responded, demo_called, demo_answered,
+                   trial_activated, paid, follow_up_count, next_follow_up_at
             FROM outbound_leads WHERE phone = %s
         """, (phone,))
         r = c.fetchone()
@@ -379,7 +414,10 @@ def get_outbound_lead_by_phone(phone):
             return None
         return {
             "id": r[0], "business_name": r[1], "owner_name": r[2],
-            "phone": r[3], "city": r[4], "status": r[5]
+            "phone": r[3], "city": r[4], "status": r[5],
+            "sms_sent": r[6], "responded": r[7], "demo_called": r[8],
+            "demo_answered": r[9], "trial_activated": r[10], "paid": r[11],
+            "follow_up_count": r[12], "next_follow_up_at": r[13]
         }
     except Exception as e:
         print(f"get_outbound_lead_by_phone error: {e}")
@@ -392,11 +430,29 @@ def update_outbound_lead(phone, **kwargs):
     try:
         c = conn.cursor()
         for key, value in kwargs.items():
-            c.execute(f"UPDATE outbound_leads SET {key}=%s WHERE phone=%s", (value, phone))
+            if value == "NOW()":
+                c.execute(f"UPDATE outbound_leads SET {key}=NOW(), updated_at=NOW() WHERE phone=%s", (phone,))
+            else:
+                c.execute(f"UPDATE outbound_leads SET {key}=%s, updated_at=NOW() WHERE phone=%s", (value, phone))
         conn.commit()
     except Exception as e:
         conn.rollback()
         print(f"update_outbound_lead error: {e}")
+    finally:
+        conn.close()
+
+def log_outbound_event(phone, event_type, notes=""):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO outbound_events (lead_phone, event_type, notes)
+            VALUES (%s, %s, %s)
+        """, (phone, event_type, notes))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"log_outbound_event error: {e}")
     finally:
         conn.close()
 
@@ -406,21 +462,76 @@ def get_all_outbound_leads():
         c = conn.cursor()
         c.execute("""
             SELECT id, business_name, owner_name, phone, city,
-                   sms_sent, responded, demo_called, trial_activated, status, created_at
+                   sms_sent, responded, demo_called, demo_answered,
+                   trial_activated, paid, status, follow_up_count,
+                   next_follow_up_at, created_at
             FROM outbound_leads ORDER BY created_at DESC
         """)
         rows = c.fetchall()
         return [{
             "id": r[0], "business_name": r[1], "owner_name": r[2],
             "phone": r[3], "city": r[4], "sms_sent": r[5],
-            "responded": r[6], "demo_called": r[7], "trial_activated": r[8],
-            "status": r[9], "created_at": str(r[10])
+            "responded": r[6], "demo_called": r[7], "demo_answered": r[8],
+            "trial_activated": r[9], "paid": r[10], "status": r[11],
+            "follow_up_count": r[12], "next_follow_up_at": str(r[13]) if r[13] else None,
+            "created_at": str(r[14])
         } for r in rows]
     except Exception as e:
         print(f"get_all_outbound_leads error: {e}")
         return []
     finally:
         conn.close()
+
+def get_leads_due_followup():
+    """Get leads that need a follow-up right now."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, business_name, owner_name, phone, city, status, follow_up_count
+            FROM outbound_leads
+            WHERE next_follow_up_at <= NOW()
+            AND status NOT IN ('paid', 'dead', 'trial', 'demo_done')
+            AND follow_up_count < 2
+            ORDER BY next_follow_up_at ASC
+        """)
+        rows = c.fetchall()
+        return [{
+            "id": r[0], "business_name": r[1], "owner_name": r[2],
+            "phone": r[3], "city": r[4], "status": r[5], "follow_up_count": r[6]
+        } for r in rows]
+    except Exception as e:
+        print(f"get_leads_due_followup error: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_leads_no_answer_demo():
+    """Get leads that said YES but didn't answer the demo call — retry."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, business_name, owner_name, phone, city
+            FROM outbound_leads
+            WHERE responded = TRUE
+            AND demo_called = TRUE
+            AND demo_answered = FALSE
+            AND status = 'no_answer'
+            AND (last_follow_up_at IS NULL OR last_follow_up_at < NOW() - INTERVAL '30 minutes')
+        """)
+        rows = c.fetchall()
+        return [{
+            "id": r[0], "business_name": r[1], "owner_name": r[2],
+            "phone": r[3], "city": r[4]
+        } for r in rows]
+    except Exception as e:
+        print(f"get_leads_no_answer_demo error: {e}")
+        return []
+    finally:
+        conn.close()
+
+init_outbound_tables()
 
 
 init_db()

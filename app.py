@@ -15,6 +15,7 @@ from database import (
     update_outbound_lead, get_all_outbound_leads
 )
 from agent_sms import get_agent_response, send_quote_to_customer
+from outbound import handle_yes_response, send_batch, process_followups, start_scheduler, handle_demo_no_answer
 
 load_dotenv()
 
@@ -34,6 +35,7 @@ OWNER_NAME    = os.getenv("BUSINESS_OWNER", "Mike")
 BASE_URL      = os.getenv("BASE_URL", "")
 
 print("APP V7 — MULTI-CLIENT VOICE")
+start_scheduler()
 print(f"BASE_URL: {BASE_URL}")
 
 
@@ -123,19 +125,8 @@ def sms_reply():
 
     # Check if this is a YES response from an outbound prospect
     lead = get_outbound_lead_by_phone(from_number)
-    if lead and incoming_msg.strip().upper() in ["YES", "SI", "Y", "YEP", "YEAH", "SURE", "OK"]:
-        update_outbound_lead(from_number, responded=True, status="responded")
-        # Send confirmation SMS
-        resp.message(
-            f"Perfect! Calling {lead['business_name']} right now — answer and pretend you're a customer calling in with a problem."
-        )
-        # Trigger demo call in background thread
-        import threading
-        threading.Thread(
-            target=_make_demo_call,
-            args=(from_number, lead),
-            daemon=True
-        ).start()
+    if lead and incoming_msg.strip().upper() in ["YES", "SI", "Y", "YEP", "YEAH", "SURE", "OK", "TRIAL"]:
+        handle_yes_response(lead)
         return str(resp)
 
     reply = get_agent_response(from_number, incoming_msg)
@@ -143,52 +134,7 @@ def sms_reply():
     return str(resp)
 
 
-def _make_demo_call(prospect_phone, lead):
-    """Call the prospect and run demo agent as their business."""
-    import time
-    time.sleep(3)  # Small delay so SMS arrives first
 
-    if BASE_URL:
-        ws_url = BASE_URL.replace("https://", "wss://") + "/voice-ws"
-    else:
-        ws_url = f"wss://tradie-agent.onrender.com/voice-ws"
-
-    business_name = lead["business_name"]
-    owner_name    = lead["owner_name"] or "our technician"
-
-    welcome = (
-        f"Thank you for calling {business_name}. "
-        f"You've reached our answering service — {owner_name} is currently on a job. "
-        f"I can take your details and have someone call you right back. "
-        f"What's your first name please?"
-    )
-
-    try:
-        # Register lead as temp client so voice agent uses their business name
-        temp_client = {
-            "id": None,
-            "business_name": business_name,
-            "owner_name": owner_name,
-            "owner_phone": prospect_phone,
-            "twilio_number": OUTBOUND_NUMBER,
-            "province": "ON",
-            "plan": "demo",
-            "active": True
-        }
-
-        call = twilio_client.calls.create(
-            to=prospect_phone,
-            from_=OUTBOUND_NUMBER,
-            twiml=f"""<Response><Connect>
-                <ConversationRelay url="{ws_url}" language="en-US" interruptible="true"
-                    hints="furnace,boiler,HVAC,heat pump,thermostat,hot water tank,no heat,frozen pipes"
-                    welcomeGreeting="{welcome}" />
-            </Connect></Response>"""
-        )
-        update_outbound_lead(prospect_phone, demo_called=True, status="demo_done")
-        print(f"Demo call initiated to {business_name}: {call.sid}")
-    except Exception as e:
-        print(f"Demo call error: {e}")
 
 
 # ── VOICE ──────────────────────────────────────────────────────────────────
@@ -320,169 +266,101 @@ def onboard_client():
 
 
 
-# ── OUTBOUND SMS SYSTEM ────────────────────────────────────────────────────
-
-OUTBOUND_SMS = (
-    "Hi {owner_name}, quick question — how many calls does {business_name} miss every week?\n\n"
-    "Every missed call in HVAC goes straight to your competitor.\n\n"
-    "We built an AI that only kicks in when you don\'t answer — captures the lead and texts you instantly.\n\n"
-    "Your competitors in Ontario are already using it.\n\n"
-    "Want to hear it answer as {business_name} right now? Reply YES"
-)
-
-OUTBOUND_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
-
+# ── OUTBOUND ROUTES ───────────────────────────────────────────────────────
 
 @app.route("/outbound/add-lead", methods=["POST"])
 def add_outbound_lead():
-    """Add a single prospect. POST JSON: {business_name, owner_name, phone, city}"""
+    """Add single prospect. POST JSON: {business_name, owner_name, phone, city}"""
+    from database import create_outbound_lead
     data = request.json or {}
-    required = ["business_name", "phone"]
-    missing = [f for f in required if not data.get(f)]
-    if missing:
-        return jsonify({"error": f"Missing: {missing}"}), 400
-
+    if not data.get("business_name") or not data.get("phone"):
+        return jsonify({"error": "Missing business_name or phone"}), 400
     lead_id = create_outbound_lead(
-        business_name=data["business_name"],
-        owner_name=data.get("owner_name", ""),
-        phone=data["phone"],
-        city=data.get("city", "Ontario")
+        data["business_name"], data.get("owner_name", ""),
+        data["phone"], data.get("city", "Ontario")
     )
     return jsonify({"success": bool(lead_id), "lead_id": lead_id}), 201
 
 
 @app.route("/outbound/add-leads", methods=["POST"])
 def add_outbound_leads_bulk():
-    """Bulk add prospects. POST JSON: [{business_name, owner_name, phone, city}, ...]"""
+    """Bulk add prospects. POST JSON array: [{business_name, owner_name, phone, city}]"""
+    from database import create_outbound_lead
     leads = request.json or []
     created = 0
-    for lead in leads:
-        if lead.get("business_name") and lead.get("phone"):
-            result = create_outbound_lead(
-                business_name=lead["business_name"],
-                owner_name=lead.get("owner_name", ""),
-                phone=lead["phone"],
-                city=lead.get("city", "Ontario")
-            )
-            if result:
+    for l in leads:
+        if l.get("business_name") and l.get("phone"):
+            if create_outbound_lead(l["business_name"], l.get("owner_name", ""), l["phone"], l.get("city", "Ontario")):
                 created += 1
     return jsonify({"success": True, "created": created, "total": len(leads)}), 201
 
 
-@app.route("/outbound/send", methods=["POST"])
-def send_outbound_sms():
-    """Send SMS to one lead by phone. POST JSON: {phone}"""
-    data = request.json or {}
-    phone = data.get("phone")
-    if not phone:
-        return jsonify({"error": "Missing phone"}), 400
-
-    lead = get_outbound_lead_by_phone(phone)
-    if not lead:
-        return jsonify({"error": "Lead not found"}), 404
-
-    msg = OUTBOUND_SMS.format(
-        owner_name=lead["owner_name"] or "there",
-        business_name=lead["business_name"]
-    )
-
-    try:
-        result = twilio_client.messages.create(
-            body=msg,
-            from_=OUTBOUND_NUMBER,
-            to=phone
-        )
-        update_outbound_lead(phone, sms_sent=True, sms_sent_at="NOW()", status="contacted")
-        print(f"Outbound SMS sent to {lead['business_name']}: {result.sid}")
-        return jsonify({"success": True, "sid": result.sid}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/outbound/send-batch", methods=["POST"])
 def send_outbound_batch():
-    """Send SMS to all pending leads. Optional POST JSON: {limit: 10}"""
+    """Send initial SMS to pending leads. POST JSON: {limit: 20}"""
     data = request.json or {}
-    limit = data.get("limit", 10)
+    limit = data.get("limit", 20)
+    sent = send_batch(limit=limit)
+    return jsonify({"sent": sent}), 200
 
-    leads = get_all_outbound_leads()
-    pending = [l for l in leads if not l["sms_sent"]][:limit]
 
-    sent = 0
-    failed = 0
-    for lead in pending:
-        msg = OUTBOUND_SMS.format(
-            owner_name=lead["owner_name"] or "there",
-            business_name=lead["business_name"]
-        )
-        try:
-            twilio_client.messages.create(
-                body=msg,
-                from_=OUTBOUND_NUMBER,
-                to=lead["phone"]
-            )
-            update_outbound_lead(lead["phone"], sms_sent=True, status="contacted")
-            sent += 1
-            print(f"Sent to {lead['business_name']} ({lead['phone']})")
-        except Exception as e:
-            failed += 1
-            print(f"Failed {lead['phone']}: {e}")
-
-    return jsonify({"sent": sent, "failed": failed, "pending_remaining": len(pending) - sent}), 200
+@app.route("/outbound/process-followups", methods=["POST"])
+def run_followups():
+    """Manually trigger follow-up processing."""
+    processed = process_followups()
+    return jsonify({"processed": processed}), 200
 
 
 @app.route("/outbound/leads", methods=["GET"])
 def outbound_dashboard():
-    """View all outbound leads and their status."""
-    leads = get_all_outbound_leads()
+    leads     = get_all_outbound_leads()
     total     = len(leads)
     contacted = sum(1 for l in leads if l["sms_sent"])
     responded = sum(1 for l in leads if l["responded"])
     demoed    = sum(1 for l in leads if l["demo_called"])
     converted = sum(1 for l in leads if l["trial_activated"])
+    paid      = sum(1 for l in leads if l["paid"])
+
+    status_color = {
+        "pending": "#eee", "contacted": "#3498db", "responded": "#f39c12",
+        "demo_called": "#9b59b6", "demo_done": "#1abc9c", "no_answer": "#e67e22",
+        "trial": "#27ae60", "paid": "#2ecc71", "dead": "#bdc3c7"
+    }
 
     html = f"""<!DOCTYPE html>
 <html><head>
     <title>Outbound Pipeline</title>
-    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <style>
         body{{font-family:Arial,sans-serif;margin:20px;background:#f5f5f5}}
-        h1{{color:#333}}
-        .stats{{display:flex;gap:15px;margin-bottom:20px;flex-wrap:wrap}}
+        h1{{color:#333}}.stats{{display:flex;gap:15px;margin-bottom:20px;flex-wrap:wrap}}
         .stat{{background:white;padding:15px 20px;border-radius:8px;text-align:center;box-shadow:0 2px 4px rgba(0,0,0,.1)}}
-        .stat-number{{font-size:28px;font-weight:bold;color:#333}}
-        .stat-label{{color:#888;font-size:12px}}
+        .stat-number{{font-size:28px;font-weight:bold;color:#333}}.stat-label{{color:#888;font-size:12px}}
         table{{width:100%;border-collapse:collapse;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,.1)}}
         th{{background:#333;color:white;padding:10px;text-align:left;font-size:13px}}
         td{{padding:10px;border-bottom:1px solid #eee;font-size:13px}}
-        .badge{{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold}}
-        .pending{{background:#eee;color:#666}}
-        .contacted{{background:#3498db;color:white}}
-        .responded{{background:#f39c12;color:white}}
-        .demoed{{background:#9b59b6;color:white}}
-        .converted{{background:#2ecc71;color:white}}
+        .badge{{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:bold;color:white}}
     </style>
 </head><body>
     <h1>📤 Outbound Pipeline</h1>
     <div class="stats">
         <div class="stat"><div class="stat-number">{total}</div><div class="stat-label">Total</div></div>
         <div class="stat"><div class="stat-number">{contacted}</div><div class="stat-label">SMS Sent</div></div>
-        <div class="stat"><div class="stat-number">{responded}</div><div class="stat-label">Responded</div></div>
-        <div class="stat"><div class="stat-number">{demoed}</div><div class="stat-label">Demo Done</div></div>
-        <div class="stat"><div class="stat-number">{converted}</div><div class="stat-label">Trial Active</div></div>
+        <div class="stat"><div class="stat-number">{responded}</div><div class="stat-label">YES</div></div>
+        <div class="stat"><div class="stat-number">{demoed}</div><div class="stat-label">Demo</div></div>
+        <div class="stat"><div class="stat-number">{converted}</div><div class="stat-label">Trial</div></div>
+        <div class="stat"><div class="stat-number">{paid}</div><div class="stat-label">💰 Paid</div></div>
     </div>
     <table>
         <tr><th>Business</th><th>Owner</th><th>Phone</th><th>City</th><th>Status</th></tr>"""
 
     for l in leads:
-        status = l["status"]
-        html += f"""
-        <tr>
-            <td>{l['business_name']}</td>
-            <td>{l['owner_name'] or '—'}</td>
-            <td>{l['phone']}</td>
-            <td>{l['city'] or '—'}</td>
-            <td><span class="badge {status}">{status.upper()}</span></td>
+        color = status_color.get(l["status"], "#eee")
+        text_color = "#333" if l["status"] == "pending" else "white"
+        html += f"""<tr>
+            <td>{l['business_name']}</td><td>{l['owner_name'] or '—'}</td>
+            <td>{l['phone']}</td><td>{l['city'] or '—'}</td>
+            <td><span class="badge" style="background:{color};color:{text_color}">{l['status'].upper()}</span></td>
         </tr>"""
 
     html += "</table></body></html>"
