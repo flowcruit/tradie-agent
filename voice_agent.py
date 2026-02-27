@@ -59,8 +59,9 @@ If caller mentions: no heat, furnace not working, burst pipe, flooding, water le
 3. Ask for best callback number — confirm digit by digit — wait for confirmation
 4. Ask to describe the problem briefly
 5. If urgent — say urgency line
-6. Confirm everything: "Alright, so I have [full name] at [address], callback number [number], regarding [problem]. I'll make sure {owner_name} gets back to you right away."
-7. End: "Thanks for calling {business_name} — you'll hear back very soon. Have a great day!"
+6. Confirm everything and ask if anything else: "Alright, so I have [full name] at [address], callback number [number], regarding [problem]. I'll make sure {owner_name} gets back to you right away. Is there anything else I should pass on?"
+7. WAIT for caller response — if they say no or nothing else — THEN say goodbye: "Perfect — thanks for calling {business_name}. You'll hear back very soon. Have a great day!"
+8. NEVER combine the confirmation and the goodbye in the same response. They are always two separate turns."
 
 ## HVAC AND TRADES VOCABULARY
 furnace, boiler, HVAC, heat pump, air conditioner, AC unit, ductwork, thermostat, hot water tank, water heater, sump pump, backflow valve, drain, pipe, leak, flood, plumbing, electrical panel, breaker, carbon monoxide, CO detector"""
@@ -172,7 +173,7 @@ def stream_voice_response(conversation_history, voice_prompt, ws):
             model="gpt-4o",
             messages=[{"role": "system", "content": voice_prompt}] + conversation_history,
             temperature=0.7,
-            max_tokens=150,
+            max_tokens=200,
             stream=True
         )
 
@@ -213,13 +214,13 @@ def stream_voice_response(conversation_history, voice_prompt, ws):
 # ── Call end processing ────────────────────────────────────────────────────
 
 def should_end_call(agent_text):
-    """Require 2+ goodbye signals to avoid cutting call early."""
-    end_phrases = [
-        "have a great day", "have a good day", "talk soon",
-        "thanks for calling", "goodbye", "take care", "hear back very soon"
-    ]
+    """End call only when agent has said the full farewell after confirmation.
+    Requires both a thank-you AND a day-wish in the same response.
+    This prevents cutting off mid-conversation."""
     text_lower = agent_text.lower()
-    return sum(1 for p in end_phrases if p in text_lower) >= 2
+    has_thanks = "thanks for calling" in text_lower or "thank you for calling" in text_lower
+    has_day = "have a great day" in text_lower or "have a good day" in text_lower
+    return has_thanks and has_day
 
 
 def _process_call_end(caller_phone, session_key, client):
