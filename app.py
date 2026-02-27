@@ -335,7 +335,7 @@ def test_voice():
 
 @app.route("/clear-test", methods=["GET"])
 def clear_test():
-    """Clear test messages — run before each test call to avoid mixed history."""
+    """Clear test messages for default Twilio number only."""
     try:
         import psycopg2
         conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
@@ -345,6 +345,22 @@ def clear_test():
         conn.commit()
         conn.close()
         return "Test history cleared — ready for next call", 200
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
+@app.route("/clear-all", methods=["GET"])
+def clear_all():
+    """Nuke ALL messages and leads — use only during development."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
+        c = conn.cursor()
+        c.execute("DELETE FROM messages")
+        c.execute("DELETE FROM leads")
+        conn.commit()
+        conn.close()
+        return "All messages and leads cleared", 200
     except Exception as e:
         return f"Error: {e}", 500
 
