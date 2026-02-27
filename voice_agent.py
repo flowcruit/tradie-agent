@@ -64,7 +64,12 @@ If caller mentions: no heat, furnace not working, burst pipe, flooding, water le
 8. NEVER combine the confirmation and the goodbye in the same response. They are always two separate turns."
 
 ## HVAC AND TRADES VOCABULARY
-furnace, boiler, HVAC, heat pump, air conditioner, AC unit, ductwork, thermostat, hot water tank, water heater, sump pump, backflow valve, drain, pipe, leak, flood, plumbing, electrical panel, breaker, carbon monoxide, CO detector"""
+furnace, boiler, HVAC, heat pump, air conditioner, AC unit, ductwork, thermostat, hot water tank, water heater, sump pump, backflow valve, drain, pipe, leak, flood, plumbing, electrical panel, breaker, carbon monoxide, CO detector
+
+## CRITICAL — BUSINESS NAME AND OWNER NAME
+The business name is {business_name}. The owner name is {owner_name}.
+NEVER use any other business name or owner name. Not "Mike", not "Mike's Emergency Plumbing", not any other name.
+Every single response must refer ONLY to {business_name} and {owner_name}. This is non-negotiable."""
 
 
 def build_extractor_prompt():
@@ -195,10 +200,11 @@ def stream_voice_response(conversation_history, voice_prompt, ws):
                     }))
                     buffer = ""
 
-        # Final token
+        # Final token — add trailing space to prevent TTS cutoff on last word
+        final = (buffer.strip() + "  ") if buffer.strip() else "  "
         ws.send(json.dumps({
             "type": "text",
-            "token": buffer.strip() if buffer.strip() else "",
+            "token": final,
             "last": True
         }))
 
