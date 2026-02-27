@@ -312,16 +312,23 @@ def leads_dashboard():
 def test_voice():
     try:
         ws_url = (BASE_URL.replace("https://", "wss://") + "/voice-ws") if BASE_URL else f"wss://{request.host}/voice-ws"
+
+        # Load client from DB so test uses real config
+        client        = get_client_for_number(TWILIO_PHONE)
+        business_name = client["business_name"]
+        owner_name    = client["owner_name"]
+        owner_phone   = client["owner_phone"]
+
         call = twilio_client.calls.create(
-            to=OWNER_PHONE,
+            to=owner_phone,
             from_=TWILIO_PHONE,
             twiml=f"""<Response><Connect>
                 <ConversationRelay url="{ws_url}" language="en-US" interruptible="true"
                     hints="furnace,boiler,HVAC,heat pump,thermostat,hot water tank,water heater,sump pump,drain,pipe,leak,flood,no heat"
-                    welcomeGreeting="Thank you for calling {BUSINESS_NAME}. You've reached our answering service. What's your first name please?" />
+                    welcomeGreeting="Thank you for calling {business_name}. You've reached our answering service — {owner_name} is currently on a job. What's your first name please?" />
             </Connect></Response>"""
         )
-        return f"Test call! SID: {call.sid}", 200
+        return f"Test call! SID: {call.sid} — calling as {business_name}", 200
     except Exception as e:
         return f"Error: {e}", 500
 
