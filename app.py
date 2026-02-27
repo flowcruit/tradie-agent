@@ -333,6 +333,22 @@ def test_voice():
         return f"Error: {e}", 500
 
 
+@app.route("/clear-test", methods=["GET"])
+def clear_test():
+    """Clear test messages — run before each test call to avoid mixed history."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
+        c = conn.cursor()
+        c.execute("DELETE FROM messages WHERE phone = %s", (TWILIO_PHONE,))
+        c.execute("DELETE FROM leads WHERE phone = %s", (TWILIO_PHONE,))
+        conn.commit()
+        conn.close()
+        return "Test history cleared — ready for next call", 200
+    except Exception as e:
+        return f"Error: {e}", 500
+
+
 @app.route("/migrate", methods=["GET"])
 def migrate():
     try:
