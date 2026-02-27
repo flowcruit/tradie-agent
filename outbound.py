@@ -168,6 +168,19 @@ def _make_demo_call(lead):
     """Place outbound demo call to prospect."""
     time.sleep(4)  # SMS arrives first
 
+    # Clear any previous messages for this prospect phone
+    # so the demo agent starts fresh with no history
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        c = conn.cursor()
+        c.execute("DELETE FROM messages WHERE phone = %s", (lead["phone"],))
+        conn.commit()
+        conn.close()
+        print(f"Cleared history for {lead['phone']}")
+    except Exception as e:
+        print(f"Clear history error: {e}")
+
     ws_url = (BASE_URL.replace("https://", "wss://") + "/voice-ws") if BASE_URL else "wss://tradie-agent.onrender.com/voice-ws"
     business_name = lead["business_name"]
     owner_name = lead["owner_name"] or "our technician"
