@@ -417,6 +417,108 @@ def outbound_dashboard():
     return html
 
 
+
+# ── CLIENT API (for dashboard) ─────────────────────────────────────────────
+
+def get_token_client(token):
+    """Lookup client by dashboard token."""
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, business_name, owner_name, twilio_number, trial_ends_at, plan
+            FROM clients WHERE dashboard_token = %s AND active = TRUE
+        """, (token,))
+        r = c.fetchone()
+        if not r:
+            return None
+        return {
+            "id": r[0], "business_name": r[1], "owner_name": r[2],
+            "twilio_number": r[3], "trial_ends_at": str(r[4]) if r[4] else None,
+            "plan": r[5]
+        }
+    except Exception as e:
+        print(f"get_token_client error: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+@app.route("/api/leads", methods=["GET"])
+def api_leads():
+    """Dashboard API — returns leads + client info for a token."""
+    token = request.args.get("token")
+    if not token:
+        return jsonify({"error": "Missing token"}), 401
+
+    client = get_token_client(token)
+    if not client:
+        return jsonify({"error": "Invalid token"}), 401
+
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, name, phone, address, problem, urgent, status, created_at
+            FROM leads WHERE client_id = %s
+            ORDER BY created_at DESC LIMIT 50
+        """, (client["id"],))
+        rows = c.fetchall()
+        leads = [{
+            "id": r[0], "name": r[1], "phone": r[2], "address": r[3],
+            "problem": r[4], "urgent": r[5], "status": r[6],
+            "created_at": str(r[7])
+        } for r in rows]
+
+        # Calculate trial days left
+        days_left = None
+        if client["trial_ends_at"]:
+            from datetime import datetime
+            trial_end = datetime.fromisoformat(client["trial_ends_at"].replace("+00:00", ""))
+            days_left = max(0, (trial_end - datetime.utcnow()).days)
+
+        return jsonify({
+            "client": {
+                "business_name": client["business_name"],
+                "twilio_number": client["twilio_number"],
+                "trial_ends_at": client["trial_ends_at"],
+                "days_left": days_left,
+                "plan": client["plan"]
+            },
+            "leads": leads
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/lead/done", methods=["POST"])
+def api_lead_done():
+    """Mark lead as done."""
+    token   = request.args.get("token")
+    lead_id = request.args.get("lead_id")
+    if not token or not lead_id:
+        return jsonify({"error": "Missing params"}), 400
+
+    client = get_token_client(token)
+    if not client:
+        return jsonify({"error": "Invalid token"}), 401
+
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE leads SET status='done'
+            WHERE id=%s AND client_id=%s
+        """, (lead_id, client["id"]))
+        conn.commit()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 @app.route("/health", methods=["GET"])
 def health():
     return f"Tradie Agent v7 — Multi-client. WS_LIB: {WS_LIB}", 200
@@ -541,6 +643,11 @@ def migrate():
         c.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS client_id INTEGER")
         c.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS channel TEXT DEFAULT 'sms'")
         c.execute("ALTER TABLE leads ADD COLUMN IF NOT EXISTS contact_phone TEXT")
+        c.execute("ALTER TABLE clients ADD COLUMN IF NOT EXISTS dashboard_token TEXT UNIQUE")
+        c.execute("""
+            UPDATE clients SET dashboard_token = md5(random()::text)
+            WHERE dashboard_token IS NULL
+        """)
         c.execute("""CREATE TABLE IF NOT EXISTS clients (
             id SERIAL PRIMARY KEY, business_name TEXT NOT NULL,
             owner_name TEXT, owner_phone TEXT UNIQUE, twilio_number TEXT UNIQUE,
