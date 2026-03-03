@@ -27,6 +27,7 @@ except ImportError:
     WS_LIB = None
 
 app = Flask(__name__)
+CORS(app, resources={r'/api/*': {'origins': '*'}})
 twilio_client = Client(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
 
 OWNER_PHONE   = os.getenv("OWNER_PHONE", "")
