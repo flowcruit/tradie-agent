@@ -4,6 +4,7 @@ import json
 sys.stdout = sys.stderr
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.rest import Client
