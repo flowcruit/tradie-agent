@@ -422,7 +422,8 @@ def outbound_dashboard():
 
 def get_token_client(token):
     """Lookup client by dashboard token."""
-    conn = get_db()
+    import psycopg2
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
     try:
         c = conn.cursor()
         c.execute("""
@@ -455,7 +456,8 @@ def api_leads():
     if not client:
         return jsonify({"error": "Invalid token"}), 401
 
-    conn = get_db()
+    import psycopg2
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
     try:
         c = conn.cursor()
         c.execute("""
@@ -505,7 +507,8 @@ def api_lead_done():
     if not client:
         return jsonify({"error": "Invalid token"}), 401
 
-    conn = get_db()
+    import psycopg2
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
     try:
         c = conn.cursor()
         c.execute("""
