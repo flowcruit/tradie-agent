@@ -9,7 +9,8 @@ from twilio.rest import Client as TwilioClient
 from database import (
     get_all_outbound_leads, get_leads_due_followup,
     get_leads_no_answer_demo, update_outbound_lead, log_outbound_event,
-    create_demo_session, delete_demo_session
+    create_demo_session, delete_demo_session,
+    activate_trial, get_trials_ending_soon, get_trial_day5_clients
 )
 
 twilio = TwilioClient(os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"))
@@ -68,6 +69,30 @@ SMS_TRIAL_DAY5 = (
 SMS_TRIAL_DAY7 = (
     "Hi {owner_name}, your free trial ends today.\n\n"
     "Keep your AI receptionist for {business_name} for $299 CAD/month — no setup fee.\n\n"
+    "Activate now: {stripe_link}\n\n"
+    "Takes 60 seconds."
+)
+
+
+SMS_TRIAL_WELCOME = (
+    "Hi {owner_name}, your 7-day free trial for {business_name} is now active!\n\n"
+    "Forward your missed calls and your AI receptionist will capture every lead.\n\n"
+    "View your leads here:\n{dashboard_url}\n\n"
+    "Forward missed calls:\n"
+    "Rogers/Bell: **21*{twilio_number}#\n"
+    "Telus: *62*{twilio_number}#"
+)
+
+SMS_TRIAL_DAY5 = (
+    "Hi {owner_name}, 2 days left on your {business_name} trial.\n\n"
+    "Check your leads dashboard — every captured call is money saved:\n"
+    "{dashboard_url}\n\n"
+    "Any questions? Just reply here."
+)
+
+SMS_TRIAL_EXPIRING = (
+    "Hi {owner_name}, your trial for {business_name} ends today.\n\n"
+    "Keep your AI receptionist active for $299 CAD/month — no setup fee.\n\n"
     "Activate now: {stripe_link}\n\n"
     "Takes 60 seconds."
 )
@@ -294,6 +319,62 @@ def retry_no_answers():
     return len(no_answers)
 
 
+# ── Trial functions ───────────────────────────────────────────────────────
+
+def activate_client_trial(client_id):
+    """Activate trial and send welcome SMS with dashboard link."""
+    result = activate_trial(client_id, days=7)
+    if not result:
+        return False
+
+    base = BASE_URL or "https://tradie-agent.onrender.com"
+    dashboard_url = f"{base}/dashboard/{result['dashboard_token']}"
+
+    msg = SMS_TRIAL_WELCOME.format(
+        owner_name=result["owner_name"] or "there",
+        business_name=result["business_name"],
+        dashboard_url=dashboard_url,
+        twilio_number=result["twilio_number"]
+    )
+    send_sms(result["owner_phone"], msg)
+    print(f"Trial activated: {result['business_name']} → {dashboard_url}")
+    return True
+
+
+def process_trial_reminders():
+    """Send day 5 reminders and expiry SMS."""
+    base = BASE_URL or "https://tradie-agent.onrender.com"
+    stripe_link = os.getenv("STRIPE_PAYMENT_LINK", f"{base}/upgrade")
+
+    # Day 5 reminder
+    day5_clients = get_trial_day5_clients()
+    for c in day5_clients:
+        dashboard_url = f"{base}/dashboard/{c['dashboard_token']}"
+        msg = SMS_TRIAL_DAY5.format(
+            owner_name=c["owner_name"] or "there",
+            business_name=c["business_name"],
+            dashboard_url=dashboard_url
+        )
+        send_sms(c["owner_phone"], msg)
+        print(f"Day 5 reminder sent: {c['business_name']}")
+
+    # Expiry SMS
+    expiring = get_trials_ending_soon(days=1)
+    for c in expiring:
+        dashboard_url = f"{base}/dashboard/{c['dashboard_token']}"
+        msg = SMS_TRIAL_EXPIRING.format(
+            owner_name=c["owner_name"] or "there",
+            business_name=c["business_name"],
+            stripe_link=stripe_link
+        )
+        send_sms(c["owner_phone"], msg)
+        print(f"Expiry SMS sent: {c['business_name']}")
+
+    return len(day5_clients) + len(expiring)
+
+
+# ── Scheduler ─────────────────────────────────────────────────────────────
+
 # ── Scheduler ─────────────────────────────────────────────────────────────
 
 def start_scheduler():
@@ -301,9 +382,10 @@ def start_scheduler():
     def _run():
         while True:
             try:
-                print("Scheduler tick — processing follow-ups")
+                print("Scheduler tick — processing follow-ups and trials")
                 process_followups()
                 retry_no_answers()
+                process_trial_reminders()
             except Exception as e:
                 print(f"Scheduler error: {e}")
             time.sleep(1800)  # 30 minutes

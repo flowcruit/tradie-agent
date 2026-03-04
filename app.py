@@ -14,10 +14,11 @@ from database import (
     get_client_by_twilio_number, create_client,
     create_outbound_lead, get_outbound_lead_by_phone,
     update_outbound_lead, get_all_outbound_leads,
-    get_demo_session, delete_demo_session
+    get_demo_session, delete_demo_session,
+    activate_trial
 )
 from agent_sms import get_agent_response, send_quote_to_customer
-from outbound import handle_yes_response, send_batch, process_followups, start_scheduler, handle_demo_no_answer
+from outbound import handle_yes_response, send_batch, process_followups, start_scheduler, handle_demo_no_answer, activate_client_trial
 
 load_dotenv()
 
@@ -126,9 +127,19 @@ def sms_reply():
             resp.message(result)
             return str(resp)
 
-    # Check if this is a YES response from an outbound prospect
+    # Check if this is a TRIAL activation response
+    upper_msg = incoming_msg.strip().upper()
     lead = get_outbound_lead_by_phone(from_number)
-    if lead and incoming_msg.strip().upper() in ["YES", "SI", "Y", "YEP", "YEAH", "SURE", "OK", "TRIAL"]:
+
+    if lead and upper_msg == "TRIAL":
+        # Find client by owner_phone or create one
+        client = get_client_by_twilio_number(to_number)
+        if client:
+            update_outbound_lead(from_number, trial_activated=True, status="trial")
+            activate_client_trial(client["id"])
+        return str(resp)
+
+    if lead and upper_msg in ["YES", "SI", "Y", "YEP", "YEAH", "SURE", "OK"]:
         handle_yes_response(lead)
         return str(resp)
 
@@ -523,6 +534,27 @@ def api_lead_done():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+
+@app.route("/trial", methods=["GET"])
+def trial_page():
+    """Simple trial activation page — placeholder until Stripe."""
+    phone = request.args.get("phone", "")
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Activate Trial — Tradie Agent</title>
+<style>
+body{{font-family:Arial,sans-serif;max-width:400px;margin:60px auto;padding:20px;text-align:center}}
+h1{{font-size:24px;margin-bottom:8px}}
+p{{color:#666;margin-bottom:24px}}
+.btn{{display:block;padding:16px;background:#00e5a0;color:#000;text-decoration:none;border-radius:8px;font-weight:bold;font-size:16px}}
+</style></head>
+<body>
+<h1>🎉 Start Your Free Trial</h1>
+<p>7 days free — no credit card needed.<br>Your AI receptionist will be active in minutes.</p>
+<a href="mailto:hello@tradieagent.com?subject=Trial Activation&body=My phone: {phone}" class="btn">Activate Now</a>
+</body></html>""", 200
+
 
 @app.route("/health", methods=["GET"])
 def health():
