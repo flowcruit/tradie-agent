@@ -536,6 +536,15 @@ def api_lead_done():
         conn.close()
 
 
+
+@app.route("/activate-trial/<int:client_id>", methods=["POST"])
+def manual_activate_trial(client_id):
+    """Manually activate trial and send welcome SMS."""
+    success = activate_client_trial(client_id)
+    if success:
+        return jsonify({"success": True, "message": "Trial activated and SMS sent"}), 200
+    return jsonify({"error": "Failed to activate trial"}), 500
+
 @app.route("/trial", methods=["GET"])
 def trial_page():
     """Simple trial activation page — placeholder until Stripe."""
